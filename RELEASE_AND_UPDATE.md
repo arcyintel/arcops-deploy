@@ -191,7 +191,7 @@ One-time, per existing box (only the handful that predate this system).
    ```
    cd /opt/arcops
    cp docker-compose.yaml docker-compose.yaml.bak && cp .env .env.bak
-   curl -fsSL https://raw.githubusercontent.com/arcyintel/commons/main/src/main/resources/docker-compose-production.yaml -o docker-compose.yaml
+   curl -fsSL https://raw.githubusercontent.com/arcyintel/arcops-deploy/main/src/main/resources/docker-compose-production.yaml -o docker-compose.yaml
    ```
 2. **Add the updater knobs** to `.env` (edge box):
    ```
@@ -200,7 +200,7 @@ One-time, per existing box (only the handful that predate this system).
    ARCOPS_UPDATE_POLL_INTERVAL=120
    ARCOPS_UPDATER_TAG=latest
    ARCOPS_EDGE_TAG=latest
-   ARCOPS_EDGE_BASE_URL=https://raw.githubusercontent.com/arcyintel/commons/main
+   ARCOPS_EDGE_BASE_URL=https://raw.githubusercontent.com/arcyintel/arcops-deploy/main
    ARCOPS_EDGE_CADDYFILE_URL=        # leave empty if this box runs a licence-profile Caddyfile
    INSTALLED_VERSION=edge
    ```
