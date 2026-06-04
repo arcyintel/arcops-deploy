@@ -731,8 +731,16 @@ services:
     volumes:
       # Drive the host's compose via the socket (same trust watchtower had).
       - /var/run/docker.sock:/var/run/docker.sock
-      # GHCR auth for `docker compose pull` (docker CLI reads ~/.docker).
-      - ~/.docker/config.json:/root/.docker/config.json:ro
+      # GHCR auth for `docker compose pull`. Default ~/.docker/config.json is
+      # correct when the whole stack runs as root (customer installs). On a box
+      # that runs docker as a NON-root user (e.g. the edge/test box), the
+      # self-recreating updater runs `compose up` as root (HOME=/root) and would
+      # send /root/.docker/config.json to dockerd — a path that doesn't exist
+      # there, so docker silently creates an empty DIR and ghcr auth is lost.
+      # Such boxes set ARCOPS_DOCKER_CONFIG to an absolute host path the non-root
+      # user owns (e.g. ${ARCOPS_DIR}/.docker/config.json) so it resolves the same
+      # real file regardless of which user runs compose.
+      - ${ARCOPS_DOCKER_CONFIG:-~/.docker/config.json}:/root/.docker/config.json:ro
       # MUST mount at the SAME path: the compose CLI runs inside this container
       # but sends HOST bind paths to dockerd, and ./Caddyfile / ./mosquitto
       # resolve relative to the compose file's dir — container path must == host path.
