@@ -320,6 +320,12 @@ step "6/9 — Secrets + .env"
 gen_password()  { openssl rand -base64 24 | tr -d '/+=' | head -c 24; }
 gen_hex()       { openssl rand -hex 32; }
 gen_base64_32() { openssl rand -base64 32; }
+# The Super Admin bootstrap password ALSO has to pass identity's PasswordPolicy
+# (PasswordValidationService: upper + lower + digit + special when
+# password_require_special is on). gen_password is alphanumeric only, so it can
+# lack a symbol (always) and a digit (~1.5% of draws) → the initial-admin seed
+# would be rejected. Append "@1" to guarantee a symbol + digit for any draw.
+gen_admin_password() { printf '%s@1' "$(gen_password)"; }
 
 # Detect the docker group on the host so the identity container can
 # read /var/run/docker.sock through group_add (mode 660 + group docker).
@@ -340,7 +346,7 @@ else
     # Unique per-install Super Admin bootstrap password — replaces the baked-in
     # init.json default so no two deployments share admin credentials. The
     # operator is forced to change it on first login.
-    initial_admin_password=$(gen_password)
+    initial_admin_password=$(gen_admin_password)
     initial_admin_email="${ARCOPS_INITIAL_ADMIN_EMAIL:-admin@${DOMAIN}}"
 
     cat > "$ARCOPS_DIR/.env" <<ENVFILE

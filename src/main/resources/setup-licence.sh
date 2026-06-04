@@ -306,6 +306,12 @@ step "6/8 — Secrets + .env"
 
 gen_password()  { openssl rand -base64 24 | tr -d '/+=' | head -c 24; }
 gen_hex()       { openssl rand -hex 32; }
+# Admin password ALSO has to pass the portal PasswordPolicy (≥10 chars + upper +
+# lower + digit + SYMBOL). gen_password is alphanumeric only (base64 with /+=
+# stripped) so it reliably has upper/lower but can lack a symbol (always) and a
+# digit (~1.5% of draws) → the seed admin create() would throw and leave zero
+# portal users. Append "@1" to guarantee both a symbol and a digit for any draw.
+gen_admin_password() { printf '%s@1' "$(gen_password)"; }
 
 if [ -f "$LICENCE_DIR/.env" ]; then
     warn "$LICENCE_DIR/.env already exists — preserving (rename to regenerate secrets)"
@@ -315,7 +321,7 @@ else
     portal_password=$(gen_password)
     portal_secret=$(gen_hex)
     portal_jwt_secret=$(openssl rand -base64 48 | tr -d '\n')   # 384-bit, well above HS256 min
-    admin_password=$(gen_password)
+    admin_password=$(gen_admin_password)
     # The portal only accepts users whose email is on the allowed portal domain
     # (PortalUserService rejects anything else at creation), so the seed admin's
     # email MUST be @<portal-domain> — otherwise the seeder fails and you're
