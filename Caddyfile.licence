@@ -1,10 +1,11 @@
 # ArcOps Licence Server — standalone Caddy reverse proxy.
 #
-# Single TLS host: ${LICENCE_DOMAIN}. The portal SPA is served at
-# the root; the licence-server REST API is reachable under /api/*.
-# Both are on the same hostname because the portal makes
-# same-origin AJAX calls to the API (avoids CORS pre-flight noise
-# and shares the session cookie cleanly).
+# Single TLS host: ${LICENCE_DOMAIN}. The portal SPA is served at the ROOT
+# (e.g. https://license.titanuem.com/login), and the licence-server REST API
+# is reachable on its real paths on the SAME hostname:
+#   /portal/api/*  → admin/portal API   (staff JWT)
+#   /api/*         → customer + fleet + public signup API
+# Same-origin keeps the session cookie clean and avoids CORS pre-flight.
 #
 # SSL certs are MANUAL — setup-licence.sh expects them at
 # /etc/letsencrypt/live/${LICENCE_DOMAIN}/{fullchain,privkey}.pem.
@@ -20,27 +21,18 @@
         respond "Not Found" 404
     }
 
-    # Portal SPA API. The portal is built with base path /licence/ and calls
-    # /licence/api/* (admin API) + /licence/signup-api/* (public signup). Rewrite
-    # those to the licence-server's real paths (prod equivalent of the vite dev
-    # proxy). signup-api FIRST (it is more specific than /licence/api).
-    handle /licence/signup-api/* {
-        uri replace /licence/signup-api /api/v1/signup
-        reverse_proxy licence-server:9090
-    }
-    handle /licence/api/* {
-        uri replace /licence/api /portal/api
+    # Portal admin API. The portal (served at root) calls /portal/api/* directly
+    # — these are the licence-server's real portal endpoints, so NO rewrite.
+    # Listed before /api/* so it wins (more specific prefix).
+    handle /portal/api/* {
         reverse_proxy licence-server:9090
     }
 
-    # Customer-facing + fleet API (licence check, release manifest, fleet
-    # version intake) — proxied straight to the Spring Boot server.
+    # Customer-facing + fleet + public signup API (licence check, release
+    # manifest, fleet version intake, /api/v1/signup/*) — straight through.
     handle /api/* {
         reverse_proxy licence-server:9090
     }
-
-    # Advertised root → the SPA (which lives under /licence/).
-    redir / /licence/ permanent
 
     # MailHog catcher (dev only; in production behind real SMTP
     # this still works as a "what did the last reset email look
@@ -52,7 +44,7 @@
         reverse_proxy mailhog:8025
     }
 
-    # Portal SPA — everything else.
+    # Portal SPA — everything else (/, /login, /dashboard, /assets/*, …).
     handle {
         reverse_proxy licence-portal:80
     }
