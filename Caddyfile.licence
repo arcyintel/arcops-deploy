@@ -20,13 +20,27 @@
         respond "Not Found" 404
     }
 
-    # REST API — proxy straight to the Spring Boot server.
-    # The licence-server reads JWT-signed customer requests and
-    # responds with signed licence payloads; no special headers
-    # needed beyond what the SPA already sets.
+    # Portal SPA API. The portal is built with base path /licence/ and calls
+    # /licence/api/* (admin API) + /licence/signup-api/* (public signup). Rewrite
+    # those to the licence-server's real paths (prod equivalent of the vite dev
+    # proxy). signup-api FIRST (it is more specific than /licence/api).
+    handle /licence/signup-api/* {
+        uri replace /licence/signup-api /api/v1/signup
+        reverse_proxy licence-server:9090
+    }
+    handle /licence/api/* {
+        uri replace /licence/api /portal/api
+        reverse_proxy licence-server:9090
+    }
+
+    # Customer-facing + fleet API (licence check, release manifest, fleet
+    # version intake) — proxied straight to the Spring Boot server.
     handle /api/* {
         reverse_proxy licence-server:9090
     }
+
+    # Advertised root → the SPA (which lives under /licence/).
+    redir / /licence/ permanent
 
     # MailHog catcher (dev only; in production behind real SMTP
     # this still works as a "what did the last reset email look
