@@ -30,6 +30,7 @@ COMMONS_REPO="https://raw.githubusercontent.com/arcyintel/arcops-deploy/main"
 DOMAIN=""
 GHCR_ORG=arcyintel
 LICENSE_SERVER_URL=""
+MANIFEST_URL_OVERRIDE=""   # --manifest-url: read the release manifest straight from here (e.g. the git-committed manifest-stable.json) instead of <license-server>/api/v1/release/manifest
 RELEASE_VERSION=""   # --version X.Y.Z pins host files + image tags to that release; empty = resolve from manifest, else bootstrap from 'main'
 INSTALL_CHANNEL=stable   # --channel stable (customers, versioned) | edge (test server, tracks :latest + main)
 SKIP_TLS_CHECK=false
@@ -70,6 +71,10 @@ Options:
                            phones home to (e.g. https://licence.acme.com). Enables
                            revocation/upgrade pickup + the offline-grace heartbeat.
                            Leave unset ONLY for air-gapped installs.
+  --manifest-url URL       Read the release manifest from this exact URL instead
+                           of deriving <license-server>/api/v1/release/manifest.
+                           Point it at the git-committed manifest-stable.json to
+                           skip the licence-server publish path entirely.
   --version X.Y.Z          Pin the install to a specific ArcOps release (host
                            files + image tags). Omit to resolve the latest
                            stable from the licence-server manifest, falling back
@@ -107,6 +112,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         --domain)            DOMAIN="$2"; shift 2 ;;
         --license-server-url) LICENSE_SERVER_URL="$2"; shift 2 ;;
+        --manifest-url)      MANIFEST_URL_OVERRIDE="$2"; shift 2 ;;
         --version)           RELEASE_VERSION="$2"; shift 2 ;;
         --channel)           INSTALL_CHANNEL="$2"; shift 2 ;;
         --skip-tls-check)    SKIP_TLS_CHECK=true; shift ;;
@@ -137,6 +143,14 @@ esac
 ARCOPS_MANIFEST_URL=""
 if [ -n "$LICENSE_SERVER_URL" ]; then
     ARCOPS_MANIFEST_URL="${LICENSE_SERVER_URL%/}/api/v1/release/manifest"
+fi
+# --manifest-url overrides the derived endpoint. Use it to read the manifest
+# directly from the git-committed manifest-stable.json (no licence-server POST /
+# publish-token wiring + no GH→box reachability needed; the manifest's own
+# composeUrl/caddyfileUrl point at the version-pinned git raw, and fleet version
+# intake still flows via the gateway's X-Installed-Version on /license/check).
+if [ -n "$MANIFEST_URL_OVERRIDE" ]; then
+    ARCOPS_MANIFEST_URL="$MANIFEST_URL_OVERRIDE"
 fi
 if [ "$INSTALL_CHANNEL" = edge ]; then
     # Test/staging box: track the moving :latest tag + 'main' host files. No
