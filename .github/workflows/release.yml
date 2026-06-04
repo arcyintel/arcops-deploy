@@ -1,0 +1,91 @@
+name: Release — pin :latest → :X.Y.Z
+
+# Cut an ArcOps release: freeze the CURRENT validated :latest digest of every
+# service as :X.Y.Z, in ghcr, by manifest re-tag (no rebuild, multi-arch safe).
+#
+# An "ArcOps version" = all services on the same :X.Y.Z + that version's host
+# files (compose / Caddyfile / mosquitto / .env.template) at the commons git tag
+# vX.Y.Z. So the release action is: push the commons tag vX.Y.Z. That tag both
+#   (a) freezes the host files (the manifest URLs point at commons/vX.Y.Z/...), and
+#   (b) triggers this workflow to pin every image to :X.Y.Z.
+# Promotion of :X.Y.Z → :stable (+ the manifest customers read) is promote.yml.
+#
+# The test server (edge channel) has already validated :latest by this point;
+# :X.Y.Z captures exactly that digest. Optionally stand up a pinned staging box
+# (setup.sh --version X.Y.Z) to validate the frozen artifact before promoting.
+#
+# Requires repo/org secret GHCR_PAT: a token with write:packages over the
+# arcyintel/* image packages (the default GITHUB_TOKEN can't write packages
+# owned by the sibling service repos). read:packages is implied.
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to cut, e.g. 1.5.0 (no leading v)'
+        required: true
+
+permissions:
+  packages: write
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  ORG: arcyintel
+  # ghcr image names (NOT the manifest service keys — those hyphenate + rename
+  # frontend; the mapping lives in promote.yml where the manifest is written).
+  # licence (license-server repo) + licence-ui (licence-portal repo) are the
+  # licence-stack images (test→:latest, prod→:stable, same version line) —
+  # re-tagged but NOT added to the customer manifest.
+  IMAGES: gateway back_core identity apple_mdm android_mdm windows_mdm uconfrontend arcops-updater licence licence-ui
+
+jobs:
+  pin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve + validate version
+        id: v
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          if ! printf '%s' "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version must be X.Y.Z (got '$V')"; exit 1
+          fi
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Cutting release $V"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Re-tag every service :latest → :X.Y.Z (by digest)
+        run: |
+          set -euo pipefail
+          V="${{ steps.v.outputs.version }}"
+          # ghcr intermittently returns 502/503 under load; retry transient failures.
+          retry() { local n=1; until "$@"; do [ "$n" -ge 6 ] && return 1; echo "  …ghcr error, retry $n/6 in $((n*5))s"; sleep $((n*5)); n=$((n+1)); done; }
+          fail=0
+          for img in $IMAGES; do
+            src="$REGISTRY/$ORG/$img:latest"
+            dst="$REGISTRY/$ORG/$img:$V"
+            echo "::group::$img  latest → $V"
+            if retry docker buildx imagetools create --tag "$dst" "$src"; then
+              docker buildx imagetools inspect "$dst" | grep -iE 'Name|Digest' | head -3 || true
+            else
+              echo "::error::failed to pin $img after retries (is $src present in ghcr?)"; fail=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "All services pinned to $V. Next: validate, then run promote.yml for $V."

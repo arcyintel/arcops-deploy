@@ -1,0 +1,45 @@
+# ArcOps Licence Server — standalone Caddy reverse proxy.
+#
+# Single TLS host: ${LICENCE_DOMAIN}. The portal SPA is served at
+# the root; the licence-server REST API is reachable under /api/*.
+# Both are on the same hostname because the portal makes
+# same-origin AJAX calls to the API (avoids CORS pre-flight noise
+# and shares the session cookie cleanly).
+#
+# SSL certs are MANUAL — setup-licence.sh expects them at
+# /etc/letsencrypt/live/${LICENCE_DOMAIN}/{fullchain,privkey}.pem.
+# The Caddy container mounts /etc/letsencrypt:/etc/letsencrypt:ro.
+
+{$LICENCE_DOMAIN} {
+    tls /etc/letsencrypt/live/{$LICENCE_DOMAIN}/fullchain.pem /etc/letsencrypt/live/{$LICENCE_DOMAIN}/privkey.pem
+
+    # Licence-server actuator — internal ops only. Block from the
+    # outside; if you want it exposed, route a specific sub-path
+    # like /api/actuator/health and add basic auth.
+    handle /actuator/* {
+        respond "Not Found" 404
+    }
+
+    # REST API — proxy straight to the Spring Boot server.
+    # The licence-server reads JWT-signed customer requests and
+    # responds with signed licence payloads; no special headers
+    # needed beyond what the SPA already sets.
+    handle /api/* {
+        reverse_proxy licence-server:9090
+    }
+
+    # MailHog catcher (dev only; in production behind real SMTP
+    # this still works as a "what did the last reset email look
+    # like" debugging surface).
+    handle /mail {
+        redir /mail/ permanent
+    }
+    handle_path /mail/* {
+        reverse_proxy mailhog:8025
+    }
+
+    # Portal SPA — everything else.
+    handle {
+        reverse_proxy licence-portal:80
+    }
+}

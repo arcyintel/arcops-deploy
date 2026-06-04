@@ -1,0 +1,26 @@
+{
+  "version": "1.0.1",
+  "channel": "stable",
+  "releasedAt": "2026-06-04T08:51:59Z",
+  "services": {
+    "gateway": "1.0.1",
+    "back-core": "1.0.1",
+    "identity": "1.0.1",
+    "apple-mdm": "1.0.1",
+    "android-mdm": "1.0.1",
+    "windows-mdm": "1.0.1",
+    "frontend": "1.0.1",
+    "arcops-updater": "1.0.1"
+  },
+  "composeUrl": "https://raw.githubusercontent.com/arcyintel/commons/v1.0.1/src/main/resources/docker-compose-production.yaml",
+  "caddyfileUrl": "https://raw.githubusercontent.com/arcyintel/commons/v1.0.1/Caddyfile.no-licence",
+  "mosquittoConfUrl": "https://raw.githubusercontent.com/arcyintel/commons/v1.0.1/src/main/resources/mosquitto/mosquitto.conf",
+  "envTemplateUrl": "https://raw.githubusercontent.com/arcyintel/commons/v1.0.1/src/main/resources/.env.template",
+  "configChecksums": {
+    "docker-compose.yaml": "sha256:ecf6338681386f29a7178995b0cc1df201d9e8b9a6288278d64f456c9c74f7c5",
+    "Caddyfile": "sha256:97dcf78655d512b9a82e03675c81c080a4dd532a809367ea16568aa44ee30a32",
+    "mosquitto.conf": "sha256:076bd4c52f509f1556a34948a3247e76c0c0f3e9a44ef6f86d4b50f693236996"
+  },
+  "minFromVersion": "0.0.0",
+  "notes": "promoted to stable"
+}

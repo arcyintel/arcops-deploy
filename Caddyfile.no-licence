@@ -1,0 +1,180 @@
+# ArcOps reverse-proxy — Caddyfile WITHOUT the licence-portal route.
+#
+# Used by setup.sh for new customer deployments that don't ship the
+# standalone licence project. Mirrors the production Caddyfile in this
+# directory in every other respect; the only structural difference is
+# the absence of the /licence/* handlers.
+#
+# Three TLS hosts:
+#   1. $DOMAIN                       — Frontend + API + MQTT + MailHog
+#   2. enterpriseenrollment.$DOMAIN  — Windows MS-MDE2 / WSTEP enrolment
+#   3. mdm.$DOMAIN                   — Windows OMA-DM SyncML post-enrol
+#
+# SSL certs are MANUAL — setup.sh expects them at
+# /etc/letsencrypt/live/<host>/{fullchain,privkey}.pem. The Caddy
+# container mounts /etc/letsencrypt:/etc/letsencrypt:ro.
+
+# ── Ana domain: Frontend + API + MDM ─────────────────────────
+{$DOMAIN} {
+    tls /etc/letsencrypt/live/{$DOMAIN}/fullchain.pem /etc/letsencrypt/live/{$DOMAIN}/privkey.pem
+
+    # Privacy Policy — public, no auth
+    handle /privacy-policy {
+        root * /srv
+        rewrite * /privacy-policy.html
+        file_server
+    }
+
+    # Apple Account-Driven Enrollment Discovery
+    handle /.well-known/com.apple.remotemanagement {
+        reverse_proxy gateway:8084
+    }
+
+    # Android APK upload — large files, extended timeout
+    handle /api/android/enterprise-apps/upload {
+        request_body {
+            max_size 500MB
+        }
+        reverse_proxy gateway:8084 {
+            transport http {
+                response_header_timeout 300s
+            }
+        }
+    }
+
+    # Windows agent MSI upload — same shape as the Android APK upload.
+    # Matches POST /api/windows/agent-releases only; list (GET /) +
+    # download (GET /{id}/download) fall through to the default /api/*
+    # handler since they don't need a large request body.
+    handle /api/windows/agent-releases {
+        request_body {
+            max_size 500MB
+        }
+        reverse_proxy gateway:8084 {
+            transport http {
+                response_header_timeout 300s
+            }
+        }
+    }
+
+    # ── WebSocket routes — all proxied through the Gateway ──
+    # Gateway runs VncSessionAffinityFilter which consistent-hashes
+    # the ?session= query parameter against the Consul-discovered
+    # instance list. Centralising routing on the gateway gives stable
+    # browser↔agent affinity AND simpler SSL termination here.
+    # flush_interval -1 disables Caddy's response buffering — required
+    # for WebSocket binary frames (VNC, WebRTC, terminal output).
+    handle /api/apple/vnc-tunnel/ws {
+        reverse_proxy gateway:8084 {
+            flush_interval -1
+        }
+    }
+    handle /api/apple/screen-share/ws {
+        reverse_proxy gateway:8084 {
+            flush_interval -1
+        }
+    }
+    handle /api/apple/remote-terminal/ws {
+        reverse_proxy gateway:8084 {
+            flush_interval -1
+        }
+    }
+    handle /api/android/screen-share/ws {
+        reverse_proxy gateway:8084 {
+            flush_interval -1
+        }
+    }
+    handle /api/android/remote-terminal/ws {
+        reverse_proxy gateway:8084 {
+            flush_interval -1
+        }
+    }
+    handle /api/windows/screen-share/ws {
+        reverse_proxy gateway:8084 {
+            flush_interval -1
+        }
+    }
+    handle /api/windows/remote-terminal/ws {
+        reverse_proxy gateway:8084 {
+            flush_interval -1
+        }
+    }
+
+    # API — proxy to Spring Cloud Gateway
+    handle /api/* {
+        reverse_proxy gateway:8084
+    }
+
+    # MQTT over WebSocket — long-lived connections, disable buffering
+    handle_path /mqtt {
+        reverse_proxy mosquitto:9001 {
+            flush_interval -1
+        }
+    }
+
+    # MailHog Web UI
+    handle /mail {
+        redir /mail/ permanent
+    }
+    handle_path /mail/* {
+        reverse_proxy mailhog:8025
+    }
+
+    # Frontend SPA
+    handle {
+        reverse_proxy frontend:80
+    }
+}
+
+# ── Windows MDM enrolment — `enterpriseenrollment` host (clean TLS) ─
+# Hosts MS-MDE2 Discovery / MS-XCEP Policy / MS-WSTEP Enrolment.
+# The device has no cert during these three phases, so TLS handshake
+# MUST NOT request one (Win11 25H2 silently aborts the handshake when
+# a server requests a client cert it can't supply).
+enterpriseenrollment.{$DOMAIN} {
+    # Same multi-SAN Let's Encrypt cert (issued for both names via
+    # certbot DNS-01).
+    tls /etc/letsencrypt/live/mdm.{$DOMAIN}/fullchain.pem /etc/letsencrypt/live/mdm.{$DOMAIN}/privkey.pem
+
+    # Non-spec convenience JSON endpoint (operator-side debug aid).
+    handle /.well-known/com.microsoft.windows.mdm {
+        rewrite * /api/windows/.well-known/com.microsoft.windows.mdm
+        reverse_proxy gateway:8084
+    }
+
+    # MS-MDE2 / MS-XCEP / MS-WSTEP SOAP — three fixed endpoints.
+    handle /EnrollmentServer/Discovery.svc {
+        rewrite * /api/windows/enrollment/discovery.svc
+        reverse_proxy gateway:8084
+    }
+    handle /EnrollmentServer/Policy.svc {
+        rewrite * /api/windows/enrollment/policy.svc
+        reverse_proxy gateway:8084
+    }
+    handle /EnrollmentServer/Enrollment.svc {
+        rewrite * /api/windows/enrollment/enrollment.svc
+        reverse_proxy gateway:8084
+    }
+
+    handle {
+        respond "Not Found" 404
+    }
+}
+
+# ── Windows MDM management — `mdm` host (no mTLS, OMA-DM Sync) ─────
+# Post-enrolment OMA-DM SyncML. Plain server-cert-only TLS;
+# DmEdgeFilter validates X-Gateway-Auth instead of mTLS.
+mdm.{$DOMAIN} {
+    tls /etc/letsencrypt/live/mdm.{$DOMAIN}/fullchain.pem /etc/letsencrypt/live/mdm.{$DOMAIN}/privkey.pem
+
+    handle /ManagementServer/MDM.svc {
+        rewrite * /api/windows/dm/management.svc
+        reverse_proxy gateway:8084 {
+            header_up X-Gateway-Auth "{$MDM_GATEWAY_SECRET}"
+        }
+    }
+
+    handle {
+        respond "Not Found" 404
+    }
+}

@@ -1,0 +1,772 @@
+# ── ArcOps MDM Platform — Production Docker Compose ──────────
+# Son güncelleme: 2026-04-13
+# Sunucu: test.uconos.com (/opt/arcops/docker-compose.yaml)
+#
+# Kullanım:
+#   cp .env.example .env   # ortam değişkenlerini düzenle
+#   docker compose up -d
+#
+# Gereksinimler:
+#   - .env dosyası (DB_PASSWORD, RABBITMQ_PASSWORD, vb.)
+#   - ./mosquitto/mosquitto.conf
+#   - ./Caddyfile
+#   - ./keys/arcops-license-private.pem (RSA-4096 PKCS#8)
+#   - ~/.docker/config.json (GHCR auth — arcops-updater için)
+
+# ── Networks ─────────────────────────────────────────────────
+networks:
+  arcops-internal:
+    driver: bridge
+  arcops-public:
+    driver: bridge
+
+# ── Volumes ──────────────────────────────────────────────────
+volumes:
+  pg_apple_mdm_data:
+  pg_back_core_data:
+  pg_identity_data:
+  pg_android_mdm_data:
+  pg_windows_mdm_data:
+  pg_licence_data:
+  rabbitmq_data:
+  consul_data:
+  redis_data:
+  mosquitto_data:
+  mosquitto_log:
+  caddy_data:
+  caddy_config:
+  apple_mdm_certs:
+  apple_mdm_apps:
+  android_mdm_apps:
+  android_mdm_firebase:
+  # windows-mdm agent-release MSI catalog. Replica A may serve a GET
+  # against an MSI that replica B uploaded — needs a shared mount.
+  # Mirrors apple_mdm_apps / android_mdm_apps; both replicas of
+  # windows-mdm bind this same Docker named volume at /app/releases.
+  windows_mdm_releases:
+
+# ── Shared Environment Anchors ──────────────────────────────
+x-common-env: &common-env
+  SPRING_CLOUD_CONSUL_HOST: consul
+  SPRING_CLOUD_CONSUL_PORT: 8500
+
+x-db-env: &db-env
+  SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:-postgres}
+  SPRING_DATASOURCE_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+
+x-rabbitmq-env: &rabbitmq-env
+  SPRING_RABBITMQ_HOST: rabbitmq
+  SPRING_RABBITMQ_PORT: 5672
+  SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USER:-admin}
+  SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
+
+x-redis-env: &redis-env
+  SPRING_DATA_REDIS_HOST: redis
+  SPRING_DATA_REDIS_PORT: 6379
+
+x-jwt-env: &jwt-env
+  SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${JWK_SET_URI:-http://identity:8080/oauth2/jwks}
+
+x-mail-env: &mail-env
+  SPRING_MAIL_HOST: mailhog
+  SPRING_MAIL_PORT: 1025
+
+x-postgres-common: &postgres-common
+  image: postgres:17
+  networks:
+    - arcops-internal
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-postgres}"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+
+x-postgres-env: &postgres-env
+  POSTGRES_USER: ${DB_USERNAME:-postgres}
+  POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+  POSTGRES_DB: ${DB_NAME:-molsec_uconos}
+
+# ── Services ─────────────────────────────────────────────────
+services:
+
+  # ────────────────────────────────────────────────────────────
+  # Infrastructure
+  # ────────────────────────────────────────────────────────────
+
+  postgres-back-core:
+    <<: *postgres-common
+    container_name: postgres-back-core
+    environment:
+      <<: *postgres-env
+    volumes:
+      - pg_back_core_data:/var/lib/postgresql/data
+
+  postgres-apple-mdm:
+    <<: *postgres-common
+    container_name: postgres-apple-mdm
+    environment:
+      <<: *postgres-env
+    volumes:
+      - pg_apple_mdm_data:/var/lib/postgresql/data
+
+  postgres-identity:
+    <<: *postgres-common
+    container_name: postgres-identity
+    environment:
+      <<: *postgres-env
+    volumes:
+      - pg_identity_data:/var/lib/postgresql/data
+
+  postgres-android-mdm:
+    <<: *postgres-common
+    container_name: postgres-android-mdm
+    environment:
+      <<: *postgres-env
+    volumes:
+      - pg_android_mdm_data:/var/lib/postgresql/data
+
+  postgres-windows-mdm:
+    <<: *postgres-common
+    container_name: postgres-windows-mdm
+    environment:
+      <<: *postgres-env
+    volumes:
+      - pg_windows_mdm_data:/var/lib/postgresql/data
+
+  # The licence DB is only needed on machines that also host the
+  # licence-server (the standalone licence project). Compose profile
+  # `licence` keeps it out of `docker compose up` on every other
+  # deployment — new customer installs via setup.sh deliberately do
+  # NOT enable this profile.
+  postgres-licence:
+    <<: *postgres-common
+    container_name: postgres-licence
+    profiles: ["licence"]
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      POSTGRES_DB: arcops_license
+    volumes:
+      - pg_licence_data:/var/lib/postgresql/data
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-admin}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  consul:
+    image: consul:1.15.4
+    container_name: consul
+    environment:
+      CONSUL_BIND_INTERFACE: eth0
+    volumes:
+      - consul_data:/consul/data
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "consul", "members"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  redis:
+    image: redis:7.0-alpine
+    container_name: redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mosquitto:
+    # Custom image: eclipse-mosquitto:2 + iegomez/mosquitto-go-auth.so baked in.
+    # Source: commons/src/main/resources/mosquitto/Dockerfile.
+    # Plugin block in mosquitto.conf stays commented until the windows agent
+    # rollout flips allow_anonymous=false; until then this image is a drop-in
+    # replacement for the stock eclipse-mosquitto:2 (plugin .so present but
+    # unloaded).
+    image: ghcr.io/arcyintel/mosquitto-with-go-auth:2
+    container_name: mosquitto
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - mosquitto_data:/mosquitto/data
+      - mosquitto_log:/mosquitto/log
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    networks:
+      - arcops-internal
+      - arcops-public
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3 || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: mailhog
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+
+  # ────────────────────────────────────────────────────────────
+  # Application Services
+  # ────────────────────────────────────────────────────────────
+
+  gateway:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/gateway:${GATEWAY_TAG:-stable}
+    environment:
+      <<: [*common-env, *redis-env, *jwt-env]
+      # Licence server phone-home. The gateway is the ONLY service that calls the
+      # licence server (hourly): it picks up revocation (410) + upgrades and writes
+      # the offline-grace heartbeat that the whole stack reads. Leave EMPTY only for
+      # genuinely air-gapped installs — otherwise revocation/upgrade won't reach this
+      # deployment and an online licence with maxOfflineDays>0 will self-degrade once
+      # the grace window elapses. Set to the ArcOps licence server origin
+      # (e.g. https://licence.arcyintel.com).
+      ARCOPS_LICENSE_SERVER_URL: ${ARCOPS_LICENSE_SERVER_URL:-}
+      # The ArcOps version this box runs (arcops-updater keeps .env's
+      # INSTALLED_VERSION current). The gateway reports it on each licence
+      # check so the licence-server Fleet view knows who is on what.
+      INSTALLED_VERSION: ${INSTALLED_VERSION:-unknown}
+      # Tuned JVM defaults (Faz 1 + 4, May 2026). Reactive WebFlux/Netty —
+      # DirectMemory is the dominant non-heap consumer here, sized
+      # generously. Heap cap tightened from 384m → 256m: observed
+      # heap usage hovers at ~120 MB, 256m leaves >100 MB headroom.
+      JAVA_OPTS: ${GATEWAY_JAVA_OPTS:--Xms128m -Xmx256m -Xss512k -XX:MaxMetaspaceSize=160m -XX:MaxDirectMemorySize=128m -XX:ReservedCodeCacheSize=96m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
+      # Faz 3 — disable Spring autoconfigs we don't need. Each unused
+      # autoconfig holds onto a few MB of class metadata + bean defs
+      # in Metaspace; these two are universally safe.
+      SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.actuate.autoconfigure.jmx.JmxEndpointAutoConfiguration,org.springframework.boot.autoconfigure.h2.H2ConsoleAutoConfiguration
+      SPRING_MAIN_BANNER_MODE: "off"
+      # Reactor Netty event-loop sizing — defaults to available cores
+      # which on a 16-core host = 16 selector threads + 16 worker
+      # threads. Way more than this traffic shape needs.
+      REACTOR_NETTY_IOSELECTCOUNT: 1
+      REACTOR_NETTY_IOWORKERCOUNT: 4
+      SPRING_CLOUD_GATEWAY_HTTPCLIENT_POOL_MAX_CONNECTIONS: 200
+      SPRING_CLOUD_GATEWAY_HTTPCLIENT_POOL_MAX_IDLE_TIME: 30s
+    volumes:
+      - ./config:/app/config
+    depends_on:
+      consul:
+        condition: service_healthy
+      identity:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    networks:
+      - arcops-internal
+      - arcops-public
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8084/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  back-core:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/back_core:${BACK_CORE_TAG:-stable}
+    environment:
+      <<: [*common-env, *db-env, *rabbitmq-env, *jwt-env]
+      # Heaviest service (multi-platform aggregator + JPA + 4 schemas).
+      # Heap usage observed at ~170 MB on test traffic; 384m cap
+      # (Faz 4 reduction from 512m) leaves ~200 MB headroom which
+      # absorbs peak request bursts comfortably.
+      JAVA_OPTS: ${BACK_CORE_JAVA_OPTS:--Xms192m -Xmx384m -Xss512k -XX:MaxMetaspaceSize=224m -XX:MaxDirectMemorySize=96m -XX:ReservedCodeCacheSize=160m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
+      SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.actuate.autoconfigure.jmx.JmxEndpointAutoConfiguration,org.springframework.boot.autoconfigure.h2.H2ConsoleAutoConfiguration
+      SPRING_MAIN_BANNER_MODE: "off"
+      # Tomcat + Hikari pool tightened. Default 200 threads × 1 MB
+      # stack = 200 MB just for idle threads. 100 covers expected load.
+      SERVER_TOMCAT_THREADS_MAX: 100
+      SERVER_TOMCAT_THREADS_MIN_SPARE: 10
+      SERVER_TOMCAT_MAX_CONNECTIONS: 4096
+      SERVER_TOMCAT_ACCEPT_COUNT: 100
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 10
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 2
+      APP_HOST: ${DOMAIN:-test.uconos.com}/api/back-core
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-back-core:5432/${DB_NAME:-molsec_uconos}?currentSchema=back_core
+      SPRING_DATASOURCE_HIKARI_SCHEMA: back_core
+      SPRING_FLYWAY_SCHEMAS: back_core
+      SPRING_FLYWAY_CREATE_SCHEMAS: "true"
+      SPRING_FLYWAY_LOCATIONS: classpath:db/migration
+      # back_core reads ${MAIL_HOST} / ${MAIL_PORT} (not SPRING_MAIL_*)
+      MAIL_HOST: mailhog
+      MAIL_PORT: 1025
+      # back_core reads ${REDIS_HOST} / ${REDIS_PORT} (not SPRING_DATA_REDIS_*)
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      SERVICES_APPLE_MDM_URL: http://apple-mdm:8085/api/apple
+      SERVICES_ANDROID_MDM_URL: http://android-mdm:8088/api/android
+    volumes:
+      - ./config:/app/config
+    depends_on:
+      postgres-back-core:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/api/back-core/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  identity:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/identity:${IDENTITY_TAG:-stable}
+    environment:
+      <<: [*common-env, *db-env, *mail-env]
+      # First-boot Super Admin seed. Supplied per-install by setup.sh so every
+      # deployment gets a UNIQUE random admin password (not the baked-in default),
+      # and the operator is forced to change it on first login. Empty = fall back
+      # to the init.json default (dev/test only).
+      ARCOPS_INITIAL_ADMIN_EMAIL: ${ARCOPS_INITIAL_ADMIN_EMAIL:-}
+      ARCOPS_INITIAL_ADMIN_PASSWORD: ${ARCOPS_INITIAL_ADMIN_PASSWORD:-}
+      # OAuth2 + JWKS + audit JPA. Heap usage observed at ~85 MB;
+      # 256m cap (Faz 4 reduction from 384m) gives 3x headroom.
+      JAVA_OPTS: ${IDENTITY_JAVA_OPTS:--Xms128m -Xmx256m -Xss512k -XX:MaxMetaspaceSize=160m -XX:MaxDirectMemorySize=64m -XX:ReservedCodeCacheSize=96m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
+      SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.actuate.autoconfigure.jmx.JmxEndpointAutoConfiguration,org.springframework.boot.autoconfigure.h2.H2ConsoleAutoConfiguration
+      SPRING_MAIN_BANNER_MODE: "off"
+      SERVER_TOMCAT_THREADS_MAX: 50
+      SERVER_TOMCAT_THREADS_MIN_SPARE: 5
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+      SERVER_SECRET: ${SERVER_SECRET:-arcops}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-identity:5432/molsec_uconos?currentSchema=uconid
+      SPRING_FLYWAY_BASELINE_ON_MIGRATE: "true"
+      SPRING_FLYWAY_BASELINE_VERSION: "0"
+      # identity reads custom ADMIN_INFRA_* prefixed vars for infrastructure dashboard
+      ADMIN_INFRA_RABBITMQ_HOST: rabbitmq
+      ADMIN_INFRA_RABBITMQ_AMQP_PORT: 5672
+      ADMIN_INFRA_RABBITMQ_MGMT_PORT: 15672
+      ADMIN_INFRA_RABBITMQ_USER: ${RABBITMQ_USER:-admin}
+      ADMIN_INFRA_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
+      ADMIN_INFRA_REDIS_HOST: redis
+      ADMIN_INFRA_REDIS_PORT: 6379
+      ADMIN_INFRA_MOSQUITTO_HOST: mosquitto
+      ADMIN_INFRA_MOSQUITTO_PORT: 1883
+      ADMIN_INFRA_PG_IDENTITY_HOST: postgres-identity
+      ADMIN_INFRA_PG_IDENTITY_PORT: 5432
+      ADMIN_INFRA_PG_APPLE_MDM_HOST: postgres-apple-mdm
+      ADMIN_INFRA_PG_APPLE_MDM_PORT: 5432
+      ADMIN_INFRA_PG_BACK_CORE_HOST: postgres-back-core
+      ADMIN_INFRA_PG_BACK_CORE_PORT: 5432
+      ADMIN_INFRA_PG_EMM_MDM_HOST: postgres-back-core
+      ADMIN_INFRA_PG_EMM_MDM_PORT: 5432
+      ADMIN_INFRA_PG_ANDROID_MDM_HOST: postgres-android-mdm
+      ADMIN_INFRA_PG_ANDROID_MDM_PORT: 5432
+      ADMIN_INFRA_PG_WINDOWS_MDM_HOST: postgres-windows-mdm
+      ADMIN_INFRA_PG_WINDOWS_MDM_PORT: 5432
+      ADMIN_INFRA_PG_DATABASE: ${DB_NAME:-molsec_uconos}
+      ADMIN_INFRA_PG_USERNAME: ${DB_USERNAME:-postgres}
+      ADMIN_INFRA_PG_PASSWORD: ${DB_PASSWORD}
+      # identity reads ${RABBITMQ_HOST} (not SPRING_RABBITMQ_HOST)
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_USERNAME: ${RABBITMQ_USER:-admin}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-admin}
+      # identity reads ${REDIS_HOST} (not SPRING_DATA_REDIS_HOST)
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      APP_FRONTEND_URL: https://${DOMAIN:-test.uconos.com}
+      # Docker socket path inside the container — read by
+      # DockerStatsService when collecting per-container RSS/CPU/IO
+      # for the admin Resources page. Read-only mount; the service
+      # only calls /containers/json and /containers/{id}/stats.
+      DOCKER_SOCKET_PATH: /var/run/docker.sock
+    # Add the host's docker group as a supplementary group so the
+    # in-container appuser (uid 999) can read /var/run/docker.sock,
+    # which is owned by root:docker on the host (mode 660). Without
+    # this the JVM gets "Permission denied" the first time
+    # DockerStatsService tries to connect. Override DOCKER_GID in
+    # .env if the docker group has a different gid on your host
+    # (`getent group docker | cut -d: -f3` will tell you).
+    group_add:
+      - "${DOCKER_GID:-988}"
+    volumes:
+      - ./config:/app/config
+      # Read-only Docker socket — used by AdminResourcesService to
+      # fetch real per-container stats (RSS, CPU%, network IO).
+      # Without this the page only sees JVM-pool memory and misses
+      # ~30% of the actual container footprint (thread stacks,
+      # direct buffers, native libs, Postgres processes).
+      # Whitelist filter in DockerStatsService limits visibility to
+      # arcops-*, postgres-* (excl. licence), and a fixed infra set
+      # (consul/rabbitmq/redis/mosquitto/caddy/mailhog).
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on:
+      postgres-identity:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  apple-mdm:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/apple_mdm:${APPLE_MDM_TAG:-stable}
+    deploy:
+      replicas: ${APPLE_MDM_REPLICAS:-2}
+    environment:
+      <<: [*common-env, *db-env, *rabbitmq-env, *redis-env, *jwt-env, *mail-env]
+      # Active-active 2 replicas — heap ~100 MB per replica observed.
+      # 256m cap (Faz 4 reduction from 384m) leaves 150 MB headroom.
+      JAVA_OPTS: ${APPLE_MDM_JAVA_OPTS:--Xms128m -Xmx256m -Xss512k -XX:MaxMetaspaceSize=192m -XX:MaxDirectMemorySize=96m -XX:ReservedCodeCacheSize=128m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
+      SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.actuate.autoconfigure.jmx.JmxEndpointAutoConfiguration,org.springframework.boot.autoconfigure.h2.H2ConsoleAutoConfiguration
+      SPRING_MAIN_BANNER_MODE: "off"
+      SERVER_TOMCAT_THREADS_MAX: 75
+      SERVER_TOMCAT_THREADS_MIN_SPARE: 10
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+      APP_HOST: https://${DOMAIN:-test.uconos.com}/api/apple
+      MQTT_AGENT_BROKER_URL: wss://${DOMAIN:-test.uconos.com}/mqtt
+      CERT_CN: ${DOMAIN:-uconos.com}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-apple-mdm:5432/${DB_NAME:-molsec_uconos}?currentSchema=apple_mdm
+      SPRING_DATASOURCE_HIKARI_SCHEMA: apple_mdm
+      SPRING_FLYWAY_SCHEMAS: apple_mdm
+      SPRING_FLYWAY_CREATE_SCHEMAS: "true"
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      # Per-replica unique clientId is critical: when two MQTT clients share
+      # an id the broker disconnects the older session, which under shared
+      # subscriptions ($share/apple-mdm/...) caused random message-loss
+      # storms on every rolling deploy. Resolved at runtime in the app
+      # bootstrap by appending the container's HOSTNAME (Docker assigns
+      # a unique one per replica). INSTANCE_ID follows the same convention
+      # so the log pattern can tag lines with the same suffix.
+      MQTT_CLIENT_ID_PREFIX: arcops-apple-mdm-server
+      COMMAND_QUEUE_TYPE: redis
+      SERVICES_BACK_CORE_URL: http://back-core:8086/api/back-core
+    volumes:
+      - apple_mdm_certs:/app/certs/apple
+      - apple_mdm_apps:/app/apps
+      - ./config:/app/config
+    depends_on:
+      postgres-apple-mdm:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8085/api/apple/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  android-mdm:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/android_mdm:${ANDROID_MDM_TAG:-stable}
+    # Default scaled to 2 like apple-mdm — WebSocket sticky routing (VncSessionAffinityFilter)
+    # already covers /api/android/screen-share/ws and /api/android/remote-terminal/ws,
+    # so the only thing that was holding android-mdm at one replica was the
+    # default. Set ANDROID_MDM_REPLICAS=1 to opt back into single-instance.
+    deploy:
+      replicas: ${ANDROID_MDM_REPLICAS:-2}
+    environment:
+      <<: [*common-env, *db-env, *rabbitmq-env, *redis-env, *jwt-env, *mail-env]
+      # Active-active 2 replicas — heap ~120-150 MB per replica.
+      # 288m cap (slightly larger than apple-mdm because android-mdm
+      # currently runs the heaviest workload of the MDM trio).
+      JAVA_OPTS: ${ANDROID_MDM_JAVA_OPTS:--Xms128m -Xmx288m -Xss512k -XX:MaxMetaspaceSize=192m -XX:MaxDirectMemorySize=96m -XX:ReservedCodeCacheSize=128m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
+      SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.actuate.autoconfigure.jmx.JmxEndpointAutoConfiguration,org.springframework.boot.autoconfigure.h2.H2ConsoleAutoConfiguration
+      SPRING_MAIN_BANNER_MODE: "off"
+      SERVER_TOMCAT_THREADS_MAX: 75
+      SERVER_TOMCAT_THREADS_MIN_SPARE: 10
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-android-mdm:5432/${DB_NAME:-molsec_uconos}?currentSchema=android_mdm
+      SPRING_DATASOURCE_HIKARI_SCHEMA: android_mdm
+      SPRING_FLYWAY_SCHEMAS: android_mdm
+      SPRING_FLYWAY_CREATE_SCHEMAS: "true"
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      # Same reason as apple-mdm — broker boots the older client when two share
+      # an id, so the app resolves $HOSTNAME at boot to keep replicas unique.
+      MQTT_CLIENT_ID_PREFIX: arcops-android-mdm-server
+      MQTT_AGENT_BROKER_URL: wss://${DOMAIN:-test.uconos.com}/mqtt
+      APP_HOST: https://${DOMAIN:-test.uconos.com}/api/android
+      FIREBASE_CREDENTIALS_PATH: file:certs/firebase/service-account.json
+      SERVICES_BACK_CORE_URL: http://back-core:8086/api/back-core
+    volumes:
+      - android_mdm_apps:/app/apps
+      - android_mdm_firebase:/app/certs/firebase
+      - ./config:/app/config
+    depends_on:
+      postgres-android-mdm:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8088/api/android/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  windows-mdm:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/windows_mdm:${WINDOWS_MDM_TAG:-stable}
+    # Active-active: default 2 replicas, matching apple-mdm / android-mdm.
+    # Distributed locking via ShedLock (configs/scheduler/ShedLockConfig)
+    # gates @Scheduled jobs (WindowsComplianceEvaluator) so the same tick
+    # never double-fires across replicas. Agent-release MSI catalog uses
+    # the windows_mdm_releases shared volume so any replica can serve a
+    # file uploaded to any other replica.
+    deploy:
+      replicas: ${WINDOWS_MDM_REPLICAS:-2}
+    environment:
+      <<: [*common-env, *db-env, *rabbitmq-env, *redis-env, *jwt-env, *mail-env]
+      # Active-active 2 replicas (matches apple/android). 256m cap
+      # — WSTEP/OMA-DM workload similar in shape to apple-mdm.
+      JAVA_OPTS: ${WINDOWS_MDM_JAVA_OPTS:--Xms128m -Xmx256m -Xss512k -XX:MaxMetaspaceSize=192m -XX:MaxDirectMemorySize=96m -XX:ReservedCodeCacheSize=128m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
+      SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.actuate.autoconfigure.jmx.JmxEndpointAutoConfiguration,org.springframework.boot.autoconfigure.h2.H2ConsoleAutoConfiguration
+      SPRING_MAIN_BANNER_MODE: "off"
+      SERVER_TOMCAT_THREADS_MAX: 75
+      SERVER_TOMCAT_THREADS_MIN_SPARE: 10
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-windows-mdm:5432/${DB_NAME:-molsec_uconos}?currentSchema=windows_mdm
+      SPRING_DATASOURCE_HIKARI_SCHEMA: windows_mdm
+      SPRING_FLYWAY_SCHEMAS: windows_mdm
+      SPRING_FLYWAY_CREATE_SCHEMAS: "true"
+      APP_HOST: https://${DOMAIN:-test.uconos.com}/api/windows
+      SERVICES_BACK_CORE_URL: http://back-core:8086/api/back-core
+      # Windows MDM enrolment (MS-MDE2 / MS-WSTEP / OMA-DM) wiring.
+      # MDM_CA_MASTER_KEY: 32 random bytes base64 — encrypts the root
+      #   CA private key at rest. Generate once with
+      #   `openssl rand -base64 32` and never rotate without rolling
+      #   the whole device fleet.
+      # MDM_GATEWAY_SECRET: shared secret Caddy sends on /dm/** so the
+      #   service trusts the forwarded X-Client-Cert-Thumbprint header.
+      # MDM_PUBLIC_HOST: hostname Windows devices reach (used in
+      #   SOAP discovery responses + DMClient provisioning XML).
+      MDM_CA_MASTER_KEY: ${MDM_CA_MASTER_KEY:?MDM_CA_MASTER_KEY must be set in .env}
+      MDM_GATEWAY_SECRET: ${MDM_GATEWAY_SECRET:?MDM_GATEWAY_SECRET must be set in .env}
+      MDM_PUBLIC_HOST: ${MDM_PUBLIC_HOST:-https://mdm.${DOMAIN:-test.uconos.com}}
+      # V2 Agent (MQTT) command channel. Apple/Android pattern: the broker's
+      # network alias is `mosquitto` (not the application.yaml default `mqtt`),
+      # plus a stable client-id prefix the app combines with a random suffix
+      # so each replica gets a unique MQTT client id and the broker doesn't
+      # kick older sessions under shared subscriptions
+      # ($share/windows-mdm/arcops/windows/devices/+/...).
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      MQTT_CLIENT_ID_PREFIX: arcops-windows-mdm-server
+      # V3 Agent installer catalog. The "Download Agent" button on the FE
+      # streams MSI bytes from /app/releases; the upload endpoint writes
+      # the same path. Both replicas mount the shared windows_mdm_releases
+      # named volume so a GET against replica B for a file uploaded to
+      # replica A succeeds (active-active correctness).
+      WINDOWS_AGENT_RELEASE_PATH: /app/releases
+    volumes:
+      - ./config:/app/config
+      - windows_mdm_releases:/app/releases
+    depends_on:
+      postgres-windows-mdm:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+      # Redis env vars are merged from *redis-env above so the Spring
+      # cache + future command-queue infra (ShedLock distributed locks,
+      # rate-limit counters) can talk to the broker out of the box.
+      # Without this depends_on the windows_mdm container would race
+      # the redis health-check on cold starts.
+      redis:
+        condition: service_healthy
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8087/api/windows/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  frontend:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/uconfrontend:${FRONTEND_TAG:-stable}
+    container_name: frontend
+    networks:
+      - arcops-internal
+      - arcops-public
+    restart: unless-stopped
+    healthcheck:
+      # Override Dockerfile HEALTHCHECK: alpine wget tries [::1]:80 first
+      # and fails with connection-refused because nginx binds IPv4 only.
+      # Explicit 127.0.0.1 keeps it simple and stable.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ────────────────────────────────────────────────────────────
+  # License Server
+  # ────────────────────────────────────────────────────────────
+
+  # Separate project (lives in arcyintel/licence on GHCR). Gated
+  # behind the `licence` compose profile so new customer setup.sh
+  # deployments don't pull or start it — they don't ship licence at
+  # all. Re-enable on machines that host it with
+  # COMPOSE_PROFILES=licence docker compose up -d.
+  licence-server:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/licence:${LICENCE_TAG:-latest}
+    container_name: licence-server
+    profiles: ["licence"]
+    environment:
+      <<: [*db-env, *redis-env]
+      JAVA_OPTS: -Xms256m -Xmx512m
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-licence:5432/arcops_license
+      # licence-server reads ${SMTP_HOST} / ${SMTP_PORT} (not SPRING_MAIL_*)
+      SMTP_HOST: mailhog
+      SMTP_PORT: 1025
+      LICENSE_PRIVATE_KEY_PATH: /app/keys/arcops-license-private.pem
+    volumes:
+      - ./keys:/app/keys:ro
+    depends_on:
+      postgres-licence:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ────────────────────────────────────────────────────────────
+  # Reverse Proxy + Auto-updater
+  # ────────────────────────────────────────────────────────────
+
+  # arcops-updater — the ArcOps release agent. Replaces watchtower: it is
+  # version-aware (drives the whole box to the release manifest's pinned
+  # version), updates compose + host config too (not just images), and
+  # backs up + health-gates + rolls back. Each cycle it pins every *_TAG in
+  # .env to the manifest version, runs `compose pull && up -d` EXCLUDING
+  # itself (a transient helper recreates the updater last), then phones the
+  # installed version home. Air-gapped boxes leave ARCOPS_MANIFEST_URL empty
+  # and update via `arcops-update.sh --bundle` instead.
+  arcops-updater:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/arcops-updater:${ARCOPS_UPDATER_TAG:-stable}
+    container_name: arcops-updater
+    environment:
+      ARCOPS_DIR: ${ARCOPS_DIR:-/opt/arcops}
+      ARCOPS_CHANNEL: ${ARCOPS_CHANNEL:-stable}
+      ARCOPS_AUTO_UPDATE: ${ARCOPS_AUTO_UPDATE:-true}
+      ARCOPS_UPDATE_POLL_INTERVAL: ${ARCOPS_UPDATE_POLL_INTERVAL:-3600}
+      # Where to read the release manifest (licence-server GET /api/v1/release/manifest);
+      # phone-home POST is derived from it. Empty = updater idles (no source).
+      # Host files come from the PUBLIC arcops-deploy repo (manifest *Url) — no
+      # token needed. Images are pulled from private ghcr with the box's creds.
+      ARCOPS_MANIFEST_URL: ${ARCOPS_MANIFEST_URL:-}
+      ARCOPS_SELF_SERVICE: arcops-updater
+      ARCOPS_UPDATER_TAG: ${ARCOPS_UPDATER_TAG:-stable}
+      # Edge channel (test/staging only; ignored when ARCOPS_CHANNEL=stable):
+      # track the moving tag + arcops-deploy ref's host files instead of a manifest.
+      ARCOPS_EDGE_TAG: ${ARCOPS_EDGE_TAG:-latest}
+      ARCOPS_TRACK_REF: ${ARCOPS_TRACK_REF:-main}
+      ARCOPS_EDGE_CADDYFILE_URL: ${ARCOPS_EDGE_CADDYFILE_URL:-}
+      GHCR_ORG: ${GHCR_ORG:-arcyintel}
+    volumes:
+      # Drive the host's compose via the socket (same trust watchtower had).
+      - /var/run/docker.sock:/var/run/docker.sock
+      # GHCR auth for `docker compose pull` (docker CLI reads ~/.docker).
+      - ~/.docker/config.json:/root/.docker/config.json:ro
+      # MUST mount at the SAME path: the compose CLI runs inside this container
+      # but sends HOST bind paths to dockerd, and ./Caddyfile / ./mosquitto
+      # resolve relative to the compose file's dir — container path must == host path.
+      - ${ARCOPS_DIR:-/opt/arcops}:${ARCOPS_DIR:-/opt/arcops}
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    environment:
+      DOMAIN: ${DOMAIN:-test.uconos.com}
+      BYOD_DOMAIN: ${BYOD_DOMAIN:-arcops.arcyintel.com}
+      # Forwarded to the windows-mdm service on /dm/management.svc as
+      # X-Gateway-Auth so the backend's DmEdgeFilter can verify the
+      # request really came through Caddy. Caddyfile substitutes this
+      # via {$MDM_GATEWAY_SECRET}; if the var isn't exported here the
+      # header lands empty and every OMA-DM Sync request 401s.
+      MDM_GATEWAY_SECRET: ${MDM_GATEWAY_SECRET}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./privacy-policy.html:/srv/privacy-policy.html:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - gateway
+      - frontend
+    networks:
+      - arcops-public
+      - arcops-internal
+    restart: unless-stopped

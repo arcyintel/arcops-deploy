@@ -1,0 +1,191 @@
+name: Promote — :X.Y.Z → :stable + manifest
+
+# Promote a previously-cut release (release.yml) to the STABLE channel the
+# customer fleet follows. Two effects, atomically from one manual run:
+#   1. re-tag every service's :X.Y.Z → :stable in ghcr (by digest, no rebuild),
+#   2. write + commit src/main/resources/release/manifest-stable.json — the
+#      single source of truth the licence-server serves and arcops-updater reads.
+#
+# Manual (workflow_dispatch) by design: promotion is the human "ship it to
+# customers" gate, taken only after :X.Y.Z (== the edge-validated :latest digest)
+# is trusted. Auto-promote-on-green can come later.
+#
+# Requires secret GHCR_PAT (write:packages over arcyintel/*). The manifest commit
+# uses the default GITHUB_TOKEN (same-repo contents:write).
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to promote to stable, e.g. 1.5.0 (must already be cut by release.yml)'
+        required: true
+      minFromVersion:
+        description: "Oldest INSTALLED version allowed to jump straight to this (expand-contract guard). Default 0.0.0 = no gate."
+        required: false
+      notes:
+        description: 'Release notes (free text, stored in the manifest).'
+        required: false
+
+permissions:
+  packages: write
+  contents: write
+
+env:
+  REGISTRY: ghcr.io
+  ORG: arcyintel
+  # incl. licence (license-server) + licence-ui (licence-portal) — re-tagged to
+  # :stable but deliberately NOT added to the customer manifest's services block.
+  IMAGES: gateway back_core identity apple_mdm android_mdm windows_mdm uconfrontend arcops-updater licence licence-ui
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate version
+        id: v
+        run: |
+          set -euo pipefail
+          V="${{ github.event.inputs.version }}"
+          if ! printf '%s' "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::version must be X.Y.Z (got '$V')"; exit 1
+          fi
+          MINFROM="${{ github.event.inputs.minFromVersion }}"
+          if [ -z "$MINFROM" ]; then MINFROM="0.0.0"; fi
+          echo "version=$V"     >> "$GITHUB_OUTPUT"
+          echo "minfrom=$MINFROM" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout commons (main + tags)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0    # need the vX.Y.Z tag present to read its files for checksums
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Verify :X.Y.Z images exist
+        run: |
+          set -euo pipefail
+          V="${{ steps.v.outputs.version }}"
+          retry() { local n=1; until "$@"; do [ "$n" -ge 6 ] && return 1; echo "  …ghcr error, retry $n/6 in $((n*5))s"; sleep $((n*5)); n=$((n+1)); done; }
+          miss=0
+          for img in $IMAGES; do
+            if ! retry docker buildx imagetools inspect "$REGISTRY/$ORG/$img:$V" >/dev/null 2>&1; then
+              echo "::error::$REGISTRY/$ORG/$img:$V not found — run release.yml for $V first"; miss=1
+            fi
+          done
+          if [ "$miss" -ne 0 ]; then exit 1; fi
+
+      - name: Re-tag every service :X.Y.Z → :stable (by digest)
+        run: |
+          set -euo pipefail
+          V="${{ steps.v.outputs.version }}"
+          retry() { local n=1; until "$@"; do [ "$n" -ge 6 ] && return 1; echo "  …ghcr error, retry $n/6 in $((n*5))s"; sleep $((n*5)); n=$((n+1)); done; }
+          for img in $IMAGES; do
+            echo "::group::$img  $V → stable"
+            retry docker buildx imagetools create --tag "$REGISTRY/$ORG/$img:stable" "$REGISTRY/$ORG/$img:$V" \
+              || { echo "::error::failed to promote $img after retries"; exit 1; }
+            echo "::endgroup::"
+          done
+
+      - name: Build manifest-stable.json
+        run: |
+          set -euo pipefail
+          V="${{ steps.v.outputs.version }}"
+          MINFROM="${{ steps.v.outputs.minfrom }}"
+          NOTES="${{ github.event.inputs.notes }}"
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # Host files live in the PUBLIC arcops-deploy repo → boxes fetch them
+          # via plain raw at the vX.Y.Z tag (no token; images use ghcr creds).
+          BASE="https://raw.githubusercontent.com/$ORG/arcops-deploy/v$V"
+
+          # Checksums are read from the vX.Y.Z TAG (git content) so they match
+          # byte-for-byte what arcops-update.sh fetches (the API raw bytes == git bytes).
+          sum() { git show "v$V:$1" | sha256sum | cut -d' ' -f1; }
+          CC_COMPOSE="sha256:$(sum src/main/resources/docker-compose-production.yaml)"
+          CC_CADDY="sha256:$(sum Caddyfile.no-licence)"
+          CC_MOSQ="sha256:$(sum src/main/resources/mosquitto/mosquitto.conf)"
+
+          # services: manifest keys (hyphenated; frontend, not uconfrontend) → version
+          SERVICES="$(jq -n --arg v "$V" '{
+            gateway: $v, "back-core": $v, identity: $v, "apple-mdm": $v,
+            "android-mdm": $v, "windows-mdm": $v, frontend: $v, "arcops-updater": $v
+          }')"
+
+          mkdir -p src/main/resources/release
+          jq -n \
+            --arg version "$V" \
+            --arg releasedAt "$NOW" \
+            --argjson services "$SERVICES" \
+            --arg composeUrl "$BASE/src/main/resources/docker-compose-production.yaml" \
+            --arg caddyfileUrl "$BASE/Caddyfile.no-licence" \
+            --arg mosquittoConfUrl "$BASE/src/main/resources/mosquitto/mosquitto.conf" \
+            --arg envTemplateUrl "$BASE/src/main/resources/.env.template" \
+            --arg ccCompose "$CC_COMPOSE" --arg ccCaddy "$CC_CADDY" --arg ccMosq "$CC_MOSQ" \
+            --arg minFrom "$MINFROM" \
+            --arg notes "${NOTES:-promoted to stable}" \
+            '{
+              version: $version, channel: "stable", releasedAt: $releasedAt,
+              services: $services,
+              composeUrl: $composeUrl, caddyfileUrl: $caddyfileUrl,
+              mosquittoConfUrl: $mosquittoConfUrl, envTemplateUrl: $envTemplateUrl,
+              configChecksums: {
+                "docker-compose.yaml": $ccCompose,
+                "Caddyfile": $ccCaddy,
+                "mosquitto.conf": $ccMosq
+              },
+              minFromVersion: $minFrom, notes: $notes
+            }' > src/main/resources/release/manifest-stable.json
+
+          echo "── manifest-stable.json ──"
+          cat src/main/resources/release/manifest-stable.json
+          jq -e .version src/main/resources/release/manifest-stable.json >/dev/null
+
+      - name: Commit manifest to main
+        run: |
+          set -euo pipefail
+          V="${{ steps.v.outputs.version }}"
+          git config user.name  "arcops-release-bot"
+          git config user.email "release-bot@arcyintel.com"
+          git add src/main/resources/release/manifest-stable.json
+          if git diff --cached --quiet; then
+            echo "manifest unchanged (already at $V?) — nothing to commit"
+          else
+            git commit -m "promote: stable channel → $V"
+            git push origin main
+            echo "Promoted stable → $V (manifest committed to commons)."
+          fi
+
+      - name: Publish manifest to the licence-server fleet endpoint
+        env:
+          LICENCE_URL: ${{ secrets.LICENCE_SERVER_URL }}
+          PUBLISH_TOKEN: ${{ secrets.ARCOPS_RELEASE_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${LICENCE_URL:-}" ] || [ -z "${PUBLISH_TOKEN:-}" ]; then
+            echo "::warning::LICENCE_SERVER_URL / ARCOPS_RELEASE_PUBLISH_TOKEN secret not set —"
+            echo "::warning::skipping live publish. Manifest is committed to commons; set both"
+            echo "::warning::secrets to auto-push it to the fleet (or POST it by hand)."
+            exit 0
+          fi
+          code=$(curl -sS -o /tmp/pub.out -w '%{http_code}' \
+            -X POST "${LICENCE_URL%/}/api/v1/release/manifest?channel=stable" \
+            -H "X-Release-Token: $PUBLISH_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data-binary @src/main/resources/release/manifest-stable.json || true)
+          echo "publish → HTTP $code"; cat /tmp/pub.out 2>/dev/null || true; echo
+          # Best-effort: the :stable re-tag + the committed manifest are the
+          # critical outputs. A failed POST (licence box down / first bootstrap)
+          # must NOT fail the promote — re-run promote (or POST by hand) once up.
+          if [ "$code" = "200" ]; then
+            echo "Fleet manifest live on $LICENCE_URL — stable boxes converge on next updater poll."
+          else
+            echo "::warning::manifest publish to $LICENCE_URL returned HTTP $code (licence box down/unreachable?)."
+            echo "::warning:::stable images + manifest-stable.json are committed; re-run promote (or POST manually) once the box is up."
+          fi
