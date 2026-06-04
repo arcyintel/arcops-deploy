@@ -39,7 +39,10 @@ jobs:
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          # GHCR_PAT (org-wide write:packages): the arcyintel/arcops-updater
+          # package is owned by another repo, so the default GITHUB_TOKEN can't
+          # push to it. Same PAT release/promote use.
+          password: ${{ secrets.GHCR_PAT }}
 
       - name: Extract metadata
         id: meta
