@@ -1,26 +1,26 @@
 {
-  "version": "1.0.2",
+  "version": "1.0.3",
   "channel": "stable",
-  "releasedAt": "2026-06-04T10:23:37Z",
+  "releasedAt": "2026-06-04T10:42:55Z",
   "services": {
-    "gateway": "1.0.2",
-    "back-core": "1.0.2",
-    "identity": "1.0.2",
-    "apple-mdm": "1.0.2",
-    "android-mdm": "1.0.2",
-    "windows-mdm": "1.0.2",
-    "frontend": "1.0.2",
-    "arcops-updater": "1.0.2"
+    "gateway": "1.0.3",
+    "back-core": "1.0.3",
+    "identity": "1.0.3",
+    "apple-mdm": "1.0.3",
+    "android-mdm": "1.0.3",
+    "windows-mdm": "1.0.3",
+    "frontend": "1.0.3",
+    "arcops-updater": "1.0.3"
   },
-  "composeUrl": "https://raw.githubusercontent.com/arcyintel/arcops-deploy/v1.0.2/src/main/resources/docker-compose-production.yaml",
-  "caddyfileUrl": "https://raw.githubusercontent.com/arcyintel/arcops-deploy/v1.0.2/Caddyfile.no-licence",
-  "mosquittoConfUrl": "https://raw.githubusercontent.com/arcyintel/arcops-deploy/v1.0.2/src/main/resources/mosquitto/mosquitto.conf",
-  "envTemplateUrl": "https://raw.githubusercontent.com/arcyintel/arcops-deploy/v1.0.2/src/main/resources/.env.template",
+  "composeUrl": "https://raw.githubusercontent.com/arcyintel/arcops-deploy/v1.0.3/src/main/resources/docker-compose-production.yaml",
+  "caddyfileUrl": "https://raw.githubusercontent.com/arcyintel/arcops-deploy/v1.0.3/Caddyfile.no-licence",
+  "mosquittoConfUrl": "https://raw.githubusercontent.com/arcyintel/arcops-deploy/v1.0.3/src/main/resources/mosquitto/mosquitto.conf",
+  "envTemplateUrl": "https://raw.githubusercontent.com/arcyintel/arcops-deploy/v1.0.3/src/main/resources/.env.template",
   "configChecksums": {
     "docker-compose.yaml": "sha256:a7cf61b30418e3171729c9f6047ad275c98732cd2532a7ee3a7d13a9313d0201",
     "Caddyfile": "sha256:97dcf78655d512b9a82e03675c81c080a4dd532a809367ea16568aa44ee30a32",
     "mosquitto.conf": "sha256:076bd4c52f509f1556a34948a3247e76c0c0f3e9a44ef6f86d4b50f693236996"
   },
   "minFromVersion": "0.0.0",
-  "notes": "Licence portal served at root (/login) instead of /licence/"
+  "notes": "Fix portal nginx SPA fallback for root (/login)"
 }
