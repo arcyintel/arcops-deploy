@@ -554,6 +554,14 @@ sleep 5
 for svc in $(docker compose ps --format '{{.Name}}' | grep -E 'apple-mdm|android-mdm|windows-mdm'); do
     docker exec -u 0 "$svc" sh -c 'chown -R 999:999 /app/apps /app/certs /app/releases 2>/dev/null || true' 2>/dev/null || true
 done
+# config/ is a HOST bind-mount (./config) shared by the gateway + every MDM
+# service: the gateway (appuser uid 999) writes config/license.dat there on
+# license apply, and each service writes the .lastvalidated heartbeat. The host
+# dir starts root-owned → the non-root containers (999) can't write → license
+# apply fails with "config/license.dat" and the licence never propagates. chown
+# it to 999 so all services can read+write. (apps/certs/releases above are
+# per-service named volumes, handled in-container; config is a shared bind-mount.)
+chown -R 999:999 "$ARCOPS_DIR/config" 2>/dev/null || true
 log "Volume permissions normalised"
 
 # ═══════════════════════════════════════════════════════════════
