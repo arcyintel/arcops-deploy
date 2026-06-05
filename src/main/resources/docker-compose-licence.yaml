@@ -112,6 +112,11 @@ services:
       # Stable hostname for the portal to call (Caddy proxies
       # /api/* here; this is the in-cluster name).
       LICENCE_PUBLIC_URL: https://${LICENCE_DOMAIN:?LICENCE_DOMAIN is required}
+      # Enables promote.yml to publish the stable release manifest here
+      # (POST /api/v1/release/manifest, guarded by X-Release-Token). Without it the
+      # endpoint returns 503 "publishing disabled" and the Fleet view shows no stable
+      # version. Set the same value as the arcops-deploy ARCOPS_RELEASE_PUBLISH_TOKEN secret.
+      ARCOPS_RELEASE_PUBLISH_TOKEN: ${ARCOPS_RELEASE_PUBLISH_TOKEN:-}
     volumes:
       - ./keys:/app/keys:ro
     depends_on:
