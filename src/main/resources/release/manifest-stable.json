@@ -1,7 +1,7 @@
 {
   "version": "1.0.9",
   "channel": "stable",
-  "releasedAt": "2026-06-04T16:16:19Z",
+  "releasedAt": "2026-06-05T12:29:10Z",
   "services": {
     "gateway": "1.0.9",
     "back-core": "1.0.9",
@@ -22,5 +22,5 @@
     "mosquitto.conf": "sha256:076bd4c52f509f1556a34948a3247e76c0c0f3e9a44ef6f86d4b50f693236996"
   },
   "minFromVersion": "0.0.0",
-  "notes": "License auto-loads on first file appearance (no manual service restart); /admin/analytics gates in-tab"
+  "notes": "promoted to stable"
 }
