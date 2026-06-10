@@ -207,6 +207,15 @@ services:
     # unloaded).
     image: ghcr.io/arcyintel/mosquitto-with-go-auth:2
     container_name: mosquitto
+    environment:
+      # SH4 broker-auth: creds for the CREDENTIALED healthcheck. With
+      # allow_anonymous=false the no-cred probe is rejected, so the healthcheck
+      # must authenticate as the arcops-backend principal. From .env; blank on
+      # installs that have not provisioned creds (their broker is still anonymous
+      # and the healthcheck's no-cred fallback applies). Same shared cred the
+      # backends use and that /auth hands to apple/android agents.
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
     ports:
       - "1883:1883"
       - "9001:9001"
@@ -214,12 +223,23 @@ services:
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      # SH4 broker-auth secret: passwords.txt (go-auth `pw` PBKDF2 format) for the
+      # arcops-backend principal. DIRECTORY mount (safe even when empty — a
+      # single-file bind of a missing host file would make Docker create a dir).
+      # The auth mosquitto.conf reads /mosquitto/secrets/passwords.txt. Owned
+      # 1000:1000 (the image's mosquitto uid). Provisioned by setup.sh / the
+      # Phase-A rotation. INERT while the conf keeps allow_anonymous=true.
+      - ./mosquitto/secrets:/mosquitto/secrets:ro
     networks:
       - arcops-internal
       - arcops-public
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3 || exit 1"]
+      # Credentialed probe first (works post-flip, when anonymous is off), then a
+      # no-cred fallback (works while still anonymous / after a rollback). Correct
+      # in BOTH states. $$ escapes compose interpolation so the container shell
+      # expands $MQTT_USERNAME / $SYS.
+      test: ["CMD-SHELL", "mosquitto_sub -u \"$$MQTT_USERNAME\" -P \"$$MQTT_PASSWORD\" -t '$$SYS/broker/uptime' -C 1 -W 3 || mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
