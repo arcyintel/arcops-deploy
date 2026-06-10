@@ -482,6 +482,17 @@ services:
       # a unique one per replica). INSTANCE_ID follows the same convention
       # so the log pattern can tag lines with the same suffix.
       MQTT_CLIENT_ID_PREFIX: arcops-apple-mdm-server
+      # SH4 Phase-A broker-auth credential pre-provisioning (INERT by default).
+      # MqttConfig only sends creds when MQTT_USERNAME is non-blank, so a blank
+      # value = anonymous CONNECT (current behaviour; unchanged for any install
+      # whose .env has no MQTT_USERNAME). When .env populates these, the backend
+      # authenticates AND hands the same creds to apple agents at /auth
+      # (AgentAuthResponse.mqtt) so agents adopt them WHILE the broker is still
+      # anonymous — the soak that makes the Phase-B allow_anonymous=false flip
+      # non-disruptive. Value must equal the `arcops-backend` principal's
+      # password in the broker passwords.txt.
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
       COMMAND_QUEUE_TYPE: redis
       SERVICES_BACK_CORE_URL: http://back-core:8086/api/back-core
     volumes:
@@ -538,6 +549,10 @@ services:
       # an id, so the app resolves $HOSTNAME at boot to keep replicas unique.
       MQTT_CLIENT_ID_PREFIX: arcops-android-mdm-server
       MQTT_AGENT_BROKER_URL: wss://${DOMAIN:-test.uconos.com}/mqtt
+      # SH4 Phase-A broker-auth credential pre-provisioning (INERT by default —
+      # see apple-mdm). Backend auths AND hands creds to android agents at /auth.
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
       APP_HOST: https://${DOMAIN:-test.uconos.com}/api/android
       FIREBASE_CREDENTIALS_PATH: file:certs/firebase/service-account.json
       SERVICES_BACK_CORE_URL: http://back-core:8086/api/back-core
@@ -613,6 +628,12 @@ services:
       # ($share/windows-mdm/arcops/windows/devices/+/...).
       MQTT_BROKER_URL: tcp://mosquitto:1883
       MQTT_CLIENT_ID_PREFIX: arcops-windows-mdm-server
+      # SH4 Phase-A broker-auth credential pre-provisioning (INERT by default —
+      # see apple-mdm). This is the windows-mdm SERVER's own TCP MQTT connection;
+      # Windows AGENTS use per-device http-auth (MqttAuthController), not this
+      # shared `arcops-backend` cred.
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
       # V3 Agent installer catalog. The "Download Agent" button on the FE
       # streams MSI bytes from /app/releases; the upload endpoint writes
       # the same path. Both replicas mount the shared windows_mdm_releases
