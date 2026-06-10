@@ -357,6 +357,16 @@ else
     server_secret=$(gen_password)
     mdm_ca_master_key=$(gen_base64_32)
     mdm_gateway_secret=$(gen_hex)
+    # SH4 shared MQTT broker credentials. Pre-generated on every fresh
+    # install so the eventual broker-auth flip (mosquitto.conf.auth) only
+    # needs `mosquitto_passwd` + a config swap — no fleet re-credentialing.
+    # SAFE to seed even though auth is OFF: the committed mosquitto.conf
+    # keeps allow_anonymous=true, so the broker ignores any creds the
+    # services present (MqttConfig sends them only because username is now
+    # non-blank). Fixed username `arcops-backend` keeps it stable across
+    # rotations of the password half.
+    mqtt_username="arcops-backend"
+    mqtt_password=$(gen_password)
     # Unique per-install Super Admin bootstrap password — replaces the baked-in
     # init.json default so no two deployments share admin credentials. The
     # operator is forced to change it on first login.
@@ -417,6 +427,16 @@ MDM_CA_MASTER_KEY=$mdm_ca_master_key
 # the X-Client-Cert-Thumbprint header. Caddy reads this from
 # the same .env, so the two stay in sync.
 MDM_GATEWAY_SECRET=$mdm_gateway_secret
+
+# ── MQTT broker auth (SH4 — generated but INERT) ─────────────
+# The committed mosquitto.conf keeps allow_anonymous=true, so the broker
+# ignores these creds today. They are pre-seeded so the eventual
+# broker-auth flip (mosquitto.conf.auth) is config-swap-only: write the
+# SAME MQTT_PASSWORD into the broker passwords.txt for principal
+# MQTT_USERNAME (mosquitto_passwd) and restart mosquitto. apple/android
+# agents receive these at /auth, so all clients share one credential.
+MQTT_USERNAME=$mqtt_username
+MQTT_PASSWORD=$mqtt_password
 
 # ── Docker socket access for admin Resources page ────────────
 # Identity reads /var/run/docker.sock through its docker group

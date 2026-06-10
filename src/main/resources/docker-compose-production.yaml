@@ -482,6 +482,14 @@ services:
       # a unique one per replica). INSTANCE_ID follows the same convention
       # so the log pattern can tag lines with the same suffix.
       MQTT_CLIENT_ID_PREFIX: arcops-apple-mdm-server
+      # SH4 broker-auth (INERT until the flip). MqttConfig only sends creds
+      # when MQTT_USERNAME is non-blank, so an empty value = anonymous CONNECT
+      # (current behaviour). These same creds are ALSO handed to apple agents
+      # at /auth (AgentAuthResponse.mqtt), so the value must equal the
+      # `arcops-backend` principal's password in the broker passwords.txt.
+      # Defaults blank → no behaviour change until .env populates them.
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
       COMMAND_QUEUE_TYPE: redis
       SERVICES_BACK_CORE_URL: http://back-core:8086/api/back-core
     volumes:
@@ -537,6 +545,11 @@ services:
       # Same reason as apple-mdm — broker boots the older client when two share
       # an id, so the app resolves $HOSTNAME at boot to keep replicas unique.
       MQTT_CLIENT_ID_PREFIX: arcops-android-mdm-server
+      # SH4 broker-auth (INERT until the flip). Same shared `arcops-backend`
+      # creds as apple-mdm — android agents also receive them at /auth.
+      # Blank default = anonymous CONNECT (current behaviour).
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
       MQTT_AGENT_BROKER_URL: wss://${DOMAIN:-test.uconos.com}/mqtt
       APP_HOST: https://${DOMAIN:-test.uconos.com}/api/android
       FIREBASE_CREDENTIALS_PATH: file:certs/firebase/service-account.json
@@ -613,6 +626,13 @@ services:
       # ($share/windows-mdm/arcops/windows/devices/+/...).
       MQTT_BROKER_URL: tcp://mosquitto:1883
       MQTT_CLIENT_ID_PREFIX: arcops-windows-mdm-server
+      # SH4 broker-auth (INERT until the flip). The windows-mdm SERVER MQTT
+      # client uses the SHARED `arcops-backend` files-backend creds (NOT the
+      # per-device HTTP path — that is for AGENTS only). WindowsAgentMqttProperties
+      # binds these via mqtt.username/password ← MQTT_USERNAME/MQTT_PASSWORD.
+      # Blank default = anonymous CONNECT (current behaviour).
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
       # V3 Agent installer catalog. The "Download Agent" button on the FE
       # streams MSI bytes from /app/releases; the upload endpoint writes
       # the same path. Both replicas mount the shared windows_mdm_releases
