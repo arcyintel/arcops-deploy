@@ -268,6 +268,10 @@ services:
       REACTOR_NETTY_IOWORKERCOUNT: 4
       SPRING_CLOUD_GATEWAY_HTTPCLIENT_POOL_MAX_CONNECTIONS: 200
       SPRING_CLOUD_GATEWAY_HTTPCLIENT_POOL_MAX_IDLE_TIME: 30s
+      # CORS allow-list (security hardening 2026-06-10): the gateway no longer
+      # reflects "*" + credentials (RFC violation / CSRF). Origins are the FE
+      # served at this deployment's domain; comma-separate to add more.
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-https://${DOMAIN:-test.uconos.com}}
     volumes:
       - ./config:/app/config
     depends_on:
@@ -361,7 +365,11 @@ services:
       SERVER_TOMCAT_THREADS_MIN_SPARE: 5
       SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
       SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
-      SERVER_SECRET: ${SERVER_SECRET:-arcops}
+      # No insecure fallback (security hardening 2026-06-10): identity now
+      # fail-fasts on a missing/weak seed. setup.sh always generates a strong
+      # SERVER_SECRET; an unset value here surfaces a clear boot error instead
+      # of silently signing JWTs with the repo-public 'arcops' seed.
+      SERVER_SECRET: ${SERVER_SECRET}
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-identity:5432/molsec_uconos?currentSchema=uconid
       SPRING_FLYWAY_BASELINE_ON_MIGRATE: "true"
       SPRING_FLYWAY_BASELINE_VERSION: "0"
