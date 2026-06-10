@@ -206,6 +206,40 @@ track_image_digests() {
   done
 }
 
+# Per-service isolated pulls for the track-mode freshness check.
+#
+# A single global `compose pull` lets ONE registry failure cancel every other
+# in-flight pull (seen live 2026-06-10: docker.io TLS handshake timeouts on the
+# pinned infra images "context canceled" the ghcr ArcOps pulls; the digest
+# compare then saw no change and new releases were silently skipped with
+# "nothing new"). Two changes close that hole:
+#   1. only MOVING-tag (:$TRACK_TAG) services get a per-cycle registry check —
+#      pinned refs (postgres:17, redis, ...) are pulled implicitly by `up -d`
+#      when missing or when the compose file changes, so re-checking them every
+#      cycle only adds registry exposure;
+#   2. each service pulls in its OWN invocation, so one registry's outage
+#      cannot cancel another registry's pull.
+# Sets TRACK_PULL_DEGRADED=true when any pull failed, so the caller never
+# reports a confident "up to date" off an incomplete check.
+TRACK_PULL_DEGRADED=false
+track_pull() {
+  local cfg svc ref failures=0
+  cfg=$($COMPOSE config --format json 2>/dev/null || true)
+  for svc in $($COMPOSE config --services 2>/dev/null); do
+    ref=""
+    if [ -n "$cfg" ]; then ref=$(jq -r --arg s "$svc" '.services[$s].image // ""' <<<"$cfg"); fi
+    case "$ref" in
+      ''|*":$TRACK_TAG") ;;  # moving tag (or unresolvable ref) → check every cycle
+      *) if docker image inspect "$ref" >/dev/null 2>&1; then continue; fi ;;
+    esac
+    if ! $COMPOSE pull --quiet "$svc" >/dev/null 2>&1; then
+      warn "track: pull failed for $svc — will retry next cycle"
+      failures=$((failures + 1))
+    fi
+  done
+  if [ "$failures" -gt 0 ]; then TRACK_PULL_DEGRADED=true; fi
+}
+
 # Track-mode change gate (replaces semver). Pulls TRACK_TAG and compares image
 # digests, and diffs the fetched host files against the running ones. True ⇒
 # something moved ⇒ apply; false ⇒ nothing new ⇒ exit 5 (watchtower-equivalent tick).
@@ -223,7 +257,7 @@ track_has_change() {
   local before after
   before=$(track_image_digests)
   log "track: pulling :$TRACK_TAG to check for new images"
-  $COMPOSE pull 2>&1 | tail -6 || warn "track pull had errors (continuing with what resolved)"
+  track_pull
   after=$(track_image_digests)
   if [ "$before" != "$after" ]; then log "track: new image digest(s) pulled"; changed=true; fi
   [ "$changed" = true ]
@@ -360,7 +394,14 @@ rollback() {
 preflight
 resolve_release
 if [ "$MODE" = track ] && [ -z "$BUNDLE" ]; then
-  if ! track_has_change; then log "track: nothing new — up to date"; exit 5; fi
+  if ! track_has_change; then
+    if [ "$TRACK_PULL_DEGRADED" = true ]; then
+      warn "track: pull degraded — up-to-date NOT confirmed (will retry next cycle)"
+    else
+      log "track: nothing new — up to date"
+    fi
+    exit 5
+  fi
   log "track: change detected — applying :$TRACK_TAG"
 else
   if ! should_update; then exit 5; fi
