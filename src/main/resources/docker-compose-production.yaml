@@ -199,12 +199,14 @@ services:
       retries: 5
 
   mosquitto:
-    # Custom image: eclipse-mosquitto:2 + iegomez/mosquitto-go-auth.so baked in.
-    # Source: commons/src/main/resources/mosquitto/Dockerfile.
-    # Plugin block in mosquitto.conf stays commented until the windows agent
-    # rollout flips allow_anonymous=false; until then this image is a drop-in
-    # replacement for the stock eclipse-mosquitto:2 (plugin .so present but
-    # unloaded).
+    # Custom image: eclipse-mosquitto:2 + iegomez/mosquitto-go-auth.so + the
+    # static acl.conf baked in. Source + CI: arcops-deploy/.github/workflows/
+    # mosquitto-image.yml builds from src/main/resources/mosquitto/Dockerfile.
+    # The active mosquitto.conf (mounted below) keeps allow_anonymous=true, so
+    # the plugin stays unloaded → this is a drop-in eclipse-mosquitto:2 (the
+    # .so + acl.conf are present but inert). The SH4 flip swaps mosquitto.conf
+    # for mosquitto.conf.auth (loads the plugin, allow_anonymous=false) AFTER
+    # the secrets mount has a passwords.txt — see the SH4 flip runbook.
     image: ghcr.io/arcyintel/mosquitto-with-go-auth:2
     container_name: mosquitto
     ports:
@@ -214,15 +216,40 @@ services:
       - mosquitto_data:/mosquitto/data
       - mosquitto_log:/mosquitto/log
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      # ── SH4 broker-auth secret (passwords.txt) ──────────────────
+      # DIRECTORY mount — NOT a single-file mount. A single-file bind of
+      # a not-yet-existing host file makes Docker create an empty DIR in
+      # its place (breakage); a directory mount is safe even when the dir
+      # is empty (current state, auth off). setup.sh / the flip runbook
+      # populate ./mosquitto/secrets/passwords.txt (mosquitto_passwd format)
+      # for the shared `arcops-backend` principal. mosquitto.conf.auth
+      # references it as `/mosquitto/secrets/passwords.txt`. INERT while
+      # the active mosquitto.conf keeps allow_anonymous=true: the broker
+      # never reads the file until the auth conf loads the files backend.
+      # acl.conf is NOT here — it is BAKED into the image (static config).
+      - ./mosquitto/secrets:/mosquitto/secrets:ro
     networks:
       - arcops-internal
       - arcops-public
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3 || exit 1"]
+      # Credential-aware probe: works BOTH while anonymous (mosquitto ignores
+      # -u/-P when allow_anonymous=true) AND after the SH4 flip (allow_anonymous
+      # =false rejects an anonymous CONNECT → an uncredentialed probe would mark
+      # the broker UNHEALTHY and block apple/android/windows-mdm which depend on
+      # service_healthy). MQTT_USERNAME/MQTT_PASSWORD interpolate from .env; when
+      # blank (creds not yet seeded) the broker is still anonymous so the probe
+      # passes. acl.conf grants arcops-backend read on exactly $SYS/broker/uptime.
+      test: ["CMD-SHELL", "mosquitto_sub -u \"$$MQTT_USERNAME\" -P \"$$MQTT_PASSWORD\" -t '$$SYS/broker/uptime' -C 1 -W 3 || mosquitto_sub -t '$$SYS/broker/uptime' -C 1 -W 3 || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 3
+    environment:
+      # Surface the shared creds into the container ONLY so the healthcheck
+      # CMD-SHELL can read them ($$MQTT_USERNAME / $$MQTT_PASSWORD). The broker
+      # itself does not consume these env vars — auth comes from passwords.txt.
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
 
   mailhog:
     image: mailhog/mailhog:latest

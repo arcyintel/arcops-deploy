@@ -428,13 +428,19 @@ MDM_CA_MASTER_KEY=$mdm_ca_master_key
 # the same .env, so the two stay in sync.
 MDM_GATEWAY_SECRET=$mdm_gateway_secret
 
-# ── MQTT broker auth (SH4 — generated but INERT) ─────────────
-# The committed mosquitto.conf keeps allow_anonymous=true, so the broker
-# ignores these creds today. They are pre-seeded so the eventual
-# broker-auth flip (mosquitto.conf.auth) is config-swap-only: write the
-# SAME MQTT_PASSWORD into the broker passwords.txt for principal
-# MQTT_USERNAME (mosquitto_passwd) and restart mosquitto. apple/android
-# agents receive these at /auth, so all clients share one credential.
+# ── MQTT broker auth (SH4 — generated, flip-ready, INERT) ────
+# The installed mosquitto.conf keeps allow_anonymous=true, so the broker
+# ignores these creds today (MqttConfig only sends them because username
+# is now non-blank). They are the SHARED `arcops-backend` principal:
+#   • backend services (apple/android/windows-mdm) CONNECT with them;
+#   • apple/android agents receive them at /auth — ONE shared credential.
+# THE CRED TRIANGLE (all three MUST be identical, or the flip rejects):
+#   (1) MQTT_PASSWORD here  ==  (2) the hash in mosquitto/secrets/passwords.txt
+#   (generated below by mosquitto_passwd for principal MQTT_USERNAME)  ==
+#   (3) the password apple/android serve to agents at /auth (= this same env).
+# setup.sh writes (1) and (2) from the SAME $mqtt_password, so a fresh box
+# is flip-ready: the SH4 flip is then just `cp mosquitto.conf.auth
+# mosquitto.conf` + recreate mosquitto (see the SH4 flip runbook).
 MQTT_USERNAME=$mqtt_username
 MQTT_PASSWORD=$mqtt_password
 
@@ -491,9 +497,20 @@ step "7/9 — Configuration files"
 # ═══════════════════════════════════════════════════════════════
 
 # Mosquitto — minimal anonymous-allowed broker for MQTT-over-TCP +
-# WebSocket. iegomez/mosquitto-go-auth plugin is baked into the
-# custom image we pull but stays unloaded until allow_anonymous is
-# flipped to false in this conf (a separate sprint).
+# WebSocket. iegomez/mosquitto-go-auth plugin + the static acl.conf are
+# baked into the custom image we pull but stay unloaded until
+# allow_anonymous is flipped to false (the SH4 flip — see runbook).
+#
+# FRESH-INSTALL CHOICE: fresh installs start ANONYMOUS, same as the
+# committed mosquitto.conf the updater syncs. We deliberately do NOT
+# auto-enable auth on fresh installs even though we generate everything
+# for it — because the updater overwrites mosquitto.conf from arcops-deploy
+# `main` (which stays anonymous to protect existing customer boxes), so an
+# auth-on fresh box would be silently downgraded back to anonymous on the
+# next update tick. Keeping fresh = anonymous makes the heredoc, the
+# committed file, and the updater all consistent, and makes the flip a
+# single uniform manual operation on EVERY box. We still seed passwords.txt
+# below so the box is flip-ready with ZERO anonymous window during the flip.
 cat > "$ARCOPS_DIR/mosquitto/mosquitto.conf" <<'MQTT'
 listener 1883
 listener 9001
@@ -508,6 +525,14 @@ log_dest stdout
 max_keepalive 120
 MQTT
 log "mosquitto.conf"
+
+# ── SH4 broker-auth secret dir: mosquitto/secrets/ ───────────────────
+# DIRECTORY (not single-file) so the compose `./mosquitto/secrets:/mosquitto/
+# secrets:ro` mount is safe even while empty. The passwords.txt inside is
+# SEEDED LATER (step 9), AFTER the broker image is pulled — mosquitto_passwd
+# lives inside that image, and GHCR auth isn't configured until step 8.
+mkdir -p "$ARCOPS_DIR/mosquitto/secrets"
+log "mosquitto/secrets/ (passwords.txt seeded after image pull)"
 
 # Host files are fetched from the resolved release ref (a vX.Y.Z tag when
 # pinned, else 'main'); image tags + INSTALLED_VERSION in .env match it.
@@ -554,6 +579,29 @@ cd "$ARCOPS_DIR"
 
 info "Pulling images (without licence profile)"
 docker compose pull 2>&1 | tail -5 || true
+
+# ── SH4: seed mosquitto/secrets/passwords.txt (image is pulled now) ──
+# The cred triangle: passwords.txt hash == .env MQTT_PASSWORD == the cred
+# apple/android serve agents at /auth. INERT (broker anonymous) until the
+# SH4 flip; seeded now so the flip is a config-swap with no anonymous gap.
+mqtt_user_eff="${mqtt_username:-$(grep -E '^MQTT_USERNAME=' "$ARCOPS_DIR/.env" | head -1 | cut -d= -f2-)}"
+mqtt_pass_eff="${mqtt_password:-$(grep -E '^MQTT_PASSWORD=' "$ARCOPS_DIR/.env" | head -1 | cut -d= -f2-)}"
+if [ -f "$ARCOPS_DIR/mosquitto/secrets/passwords.txt" ]; then
+    log "passwords.txt already exists — preserving"
+elif [ -z "$mqtt_user_eff" ] || [ -z "$mqtt_pass_eff" ]; then
+    warn "MQTT_USERNAME/MQTT_PASSWORD blank in .env — skipping passwords.txt seed (populate before any SH4 flip)"
+else
+    # mosquitto_passwd -b -c writes <user>:<hash>. Run it inside the broker
+    # image (it ships the tool) so the hash format matches the broker exactly.
+    if docker run --rm -v "$ARCOPS_DIR/mosquitto/secrets:/seed" \
+         ghcr.io/arcyintel/mosquitto-with-go-auth:2 \
+         mosquitto_passwd -b -c /seed/passwords.txt "$mqtt_user_eff" "$mqtt_pass_eff" 2>/dev/null; then
+        chmod 600 "$ARCOPS_DIR/mosquitto/secrets/passwords.txt" 2>/dev/null || true
+        log "passwords.txt seeded (principal: $mqtt_user_eff, flip-ready, INERT)"
+    else
+        warn "mosquitto_passwd failed — passwords.txt NOT seeded; generate before any SH4 flip (see runbook)"
+    fi
+fi
 
 info "Starting infrastructure (postgres, rabbitmq, redis, consul, mosquitto, mailhog)"
 docker compose up -d \

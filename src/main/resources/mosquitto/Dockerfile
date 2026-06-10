@@ -32,3 +32,18 @@ COPY --from=plugin /mosquitto/go-auth.so /usr/lib/mosquitto-go-auth.so
 # Default config — the deploy-time `mosquitto.conf` mounts over this file via a
 # volume, but a sane baked-in copy keeps the image usable without the mount.
 COPY mosquitto.conf /mosquitto/config/mosquitto.conf
+
+# ── acl.conf — BAKED (SH4 broker-auth) ──────────────────────────────
+# The ACL file is STATIC config (topic structure for the shared
+# `arcops-backend` principal — not a secret, not per-deployment), so it
+# lives IN the image rather than as a host bind-mount. Two wins:
+#   1. recreate-durable: `docker compose up -d --force-recreate mosquitto`
+#      can never lose it (no host file to go missing).
+#   2. customer-propagating: every box that pulls :2 gets the current ACL
+#      for free — no host-file migration on rollout.
+# The auth config (mosquitto.conf.auth → mosquitto.conf at flip time)
+# references THIS exact baked path: `auth_opt_acl_path /mosquitto/config/acl.conf`.
+# It is INERT while allow_anonymous=true (the plugin block is off), so baking
+# it changes nothing until the flip. passwords.txt is NOT baked — it is a
+# secret, host-side, via a directory bind-mount (see docker-compose).
+COPY acl.conf /mosquitto/config/acl.conf
