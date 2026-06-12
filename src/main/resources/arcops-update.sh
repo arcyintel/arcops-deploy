@@ -271,15 +271,38 @@ backup() {
   cp -a "$ARCOPS_DIR/docker-compose.yaml" "$BACKUP_DIR/docker-compose.yaml" 2>/dev/null || true
   if [ -f "$ARCOPS_DIR/Caddyfile" ]; then cp -a "$ARCOPS_DIR/Caddyfile" "$BACKUP_DIR/Caddyfile"; fi
   if [ -d "$ARCOPS_DIR/mosquitto" ]; then cp -a "$ARCOPS_DIR/mosquitto" "$BACKUP_DIR/mosquitto"; fi
-  local dbn dbu c schema
-  dbn=$(env_get DB_NAME); dbn=${dbn:-molsec_uconos}
-  dbu=$(env_get DB_USERNAME); dbu=${dbu:-postgres}
+  # Per-container DB dump. The user/db are discovered from EACH postgres
+  # container's own env (POSTGRES_USER/POSTGRES_DB) rather than a single global
+  # .env key, so one routine serves every stack:
+  #   • main stack    → POSTGRES_DB=molsec_uconos, one service schema per
+  #                     container (back_core, apple_mdm, android_mdm, windows_mdm)
+  #   • identity      → POSTGRES_DB=molsec_uconos but its schema is 'uconid', NOT
+  #                     the container-derived 'identity'
+  #   • licence stack → POSTGRES_DB=arcops_license (user from LICENCE_DB_USERNAME,
+  #                     not DB_USERNAME), data in the 'public' schema
+  # We restrict the dump to the container-derived schema only when that schema
+  # actually exists; otherwise we dump the whole database (correct for licence +
+  # identity, a harmless superset for the rest). The dump connects over the local
+  # socket (trust auth in the postgres image) so no password is needed.
+  local c dbu dbn schema nsflag derr
   for c in $(docker ps --format '{{.Names}}' | grep -E '^postgres-' || true); do
     schema="${c#postgres-}"; schema="${schema//-/_}"
-    if docker exec "$c" pg_dump -U "$dbu" -d "$dbn" -n "$schema" 2>/dev/null | gzip > "$BACKUP_DIR/${schema}.sql.gz"; then
-      :
+    dbu=$(docker exec "$c" printenv POSTGRES_USER 2>/dev/null || true)
+    if [ -z "$dbu" ]; then dbu=$(env_get DB_USERNAME); dbu=${dbu:-postgres}; fi
+    dbn=$(docker exec "$c" printenv POSTGRES_DB 2>/dev/null || true)
+    if [ -z "$dbn" ]; then dbn=$(env_get DB_NAME); dbn=${dbn:-molsec_uconos}; fi
+    nsflag=""
+    if docker exec "$c" psql -U "$dbu" -d "$dbn" -tAc \
+         "SELECT 1 FROM information_schema.schemata WHERE schema_name='$schema'" 2>/dev/null | grep -q 1; then
+      nsflag="-n $schema"
+    fi
+    derr="$BACKUP_DIR/${schema}.pg_dump.err"
+    # shellcheck disable=SC2086
+    if docker exec "$c" pg_dump -U "$dbu" -d "$dbn" $nsflag 2>"$derr" | gzip > "$BACKUP_DIR/${schema}.sql.gz"; then
+      rm -f "$derr"
     else
-      warn "pg_dump $schema failed (continuing — snapshot only)"
+      rm -f "$BACKUP_DIR/${schema}.sql.gz"
+      warn "pg_dump $schema (db=$dbn user=$dbu) failed: $(head -1 "$derr" 2>/dev/null) (continuing — snapshot only)"
     fi
   done
   grep -E '_TAG=' "$ARCOPS_DIR/.env" > "$BACKUP_DIR/tags.previous" 2>/dev/null || true
