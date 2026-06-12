@@ -1,0 +1,84 @@
+name: Backfill release notes
+
+# One-time (re-runnable) backfill: generates the auto release-notes digest for
+# every existing release tag and commits them all to the PRIVATE
+# arcyintel/arcops-release-notes repo in a single commit. Re-running a version
+# bumps its generatedAt, which makes the licence server's ReleaseNotesSyncJob
+# re-fetch it. Same script as release.yml's notes job — one source of truth.
+on:
+  workflow_dispatch:
+    inputs:
+      versions:
+        description: "Space-separated versions (e.g. '1.0.10 1.0.11') or 'all'"
+        required: false
+        default: 'all'
+      firstWindowDays:
+        description: 'Window (days) before the first tag, used when a version has no predecessor'
+        required: false
+        default: '30'
+
+permissions:
+  contents: read
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout arcops-deploy (tags needed for window bounds)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout arcops-release-notes
+        uses: actions/checkout@v4
+        with:
+          repository: arcyintel/arcops-release-notes
+          token: ${{ secrets.RELEASE_NOTES_PAT }}
+          path: notes-repo
+
+      - name: Generate notes for every requested version
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_NOTES_PAT }}
+        run: |
+          set -euo pipefail
+          REQ="${{ github.event.inputs.versions }}"
+          DAYS="${{ github.event.inputs.firstWindowDays }}"
+          if [ "$REQ" = "all" ] || [ -z "$REQ" ]; then
+            TAGS=$(git tag --list 'v*.*.*' --sort=v:refname)
+          else
+            TAGS=$(for v in $REQ; do echo "v${v#v}"; done)
+          fi
+          PREV=""
+          for TAG in $TAGS; do
+            V="${TAG#v}"
+            UNTIL=$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$TAG")
+            if [ -z "$UNTIL" ]; then
+              echo "::warning::tag $TAG not found — skipping"; continue
+            fi
+            # Predecessor from the FULL tag list (not the requested subset),
+            # so partial backfills still use the right window.
+            REAL_PREV=$(git tag --list 'v*.*.*' --sort=v:refname | grep -B1 -x "$TAG" | head -1)
+            if [ -z "$REAL_PREV" ] || [ "$REAL_PREV" = "$TAG" ]; then
+              SINCE=$(date -u -d "$UNTIL - ${DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+            else
+              SINCE=$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$REAL_PREV")
+            fi
+            echo "::group::$V  ($SINCE, $UNTIL]"
+            ./scripts/generate-release-notes.sh "$V" "$SINCE" "$UNTIL" ./notes-repo
+            echo "::endgroup::"
+            PREV="$TAG"
+          done
+          ./scripts/update-notes-index.sh ./notes-repo
+
+      - name: Commit + push notes (single commit)
+        run: |
+          set -euo pipefail
+          cd notes-repo
+          git config user.name "arcops-release-bot"
+          git config user.email "release-bot@arcyintel.com"
+          git add notes/ releases-index.json
+          if git diff --cached --quiet; then
+            echo "No note changes to commit."; exit 0
+          fi
+          git commit -m "notes: backfill auto release notes"
+          git push || { git pull --rebase && git push; }

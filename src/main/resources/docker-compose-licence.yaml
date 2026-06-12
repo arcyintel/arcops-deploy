@@ -117,6 +117,10 @@ services:
       # endpoint returns 503 "publishing disabled" and the Fleet view shows no stable
       # version. Set the same value as the arcops-deploy ARCOPS_RELEASE_PUBLISH_TOKEN secret.
       ARCOPS_RELEASE_PUBLISH_TOKEN: ${ARCOPS_RELEASE_PUBLISH_TOKEN:-}
+      # Read-only fine-grained PAT scoped to the PRIVATE arcyintel/arcops-release-notes
+      # repo — ReleaseNotesSyncJob pulls per-version auto release notes with it.
+      # Empty = notes sync still runs but fetches will 404 (repo is private).
+      ARCOPS_RELEASE_NOTES_TOKEN: ${ARCOPS_RELEASE_NOTES_TOKEN:-}
     volumes:
       - ./keys:/app/keys:ro
     depends_on:

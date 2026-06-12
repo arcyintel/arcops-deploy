@@ -89,3 +89,65 @@ jobs:
           done
           if [ "$fail" -ne 0 ]; then exit 1; fi
           echo "All services pinned to $V. Next: validate, then run promote.yml for $V."
+
+  # Auto release notes: collect every product repo's conventional commits in
+  # the (previous tag, this tag] window and commit the structured digest to
+  # the PRIVATE arcyintel/arcops-release-notes repo (raw commit subjects can
+  # describe security fixes — they must not land in this public repo). The
+  # licence server pulls them from there (ReleaseNotesSyncJob, 15 min).
+  # Requires secret RELEASE_NOTES_PAT: fine-grained, contents:read on the
+  # product repos + contents:read/write on arcops-release-notes.
+  notes:
+    needs: pin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout arcops-deploy (tags needed for window bounds)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Checkout arcops-release-notes
+        uses: actions/checkout@v4
+        with:
+          repository: arcyintel/arcops-release-notes
+          token: ${{ secrets.RELEASE_NOTES_PAT }}
+          path: notes-repo
+
+      - name: Generate notes for this version
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_NOTES_PAT }}
+          FIRST_WINDOW_DAYS: '30'
+        run: |
+          set -euo pipefail
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          else
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          UNTIL=$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/v$V")
+          if [ -z "$UNTIL" ]; then
+            UNTIL=$(date -u +%Y-%m-%dT%H:%M:%SZ)   # dispatch without a tag yet
+          fi
+          PREV=$(git tag --list 'v*.*.*' --sort=v:refname | grep -B1 -x "v$V" | head -1)
+          if [ -z "$PREV" ] || [ "$PREV" = "v$V" ]; then
+            SINCE=$(date -u -d "$UNTIL - ${FIRST_WINDOW_DAYS} days" +%Y-%m-%dT%H:%M:%SZ)
+          else
+            SINCE=$(git for-each-ref --format='%(creatordate:iso-strict)' "refs/tags/$PREV")
+          fi
+          echo "Notes window for $V: ($SINCE, $UNTIL]"
+          ./scripts/generate-release-notes.sh "$V" "$SINCE" "$UNTIL" ./notes-repo
+          ./scripts/update-notes-index.sh ./notes-repo
+
+      - name: Commit + push notes
+        run: |
+          set -euo pipefail
+          cd notes-repo
+          git config user.name "arcops-release-bot"
+          git config user.email "release-bot@arcyintel.com"
+          git add notes/ releases-index.json
+          if git diff --cached --quiet; then
+            echo "No note changes to commit."; exit 0
+          fi
+          V="${{ github.event.inputs.version || github.ref_name }}"
+          git commit -m "notes: auto release notes for ${V#v}"
+          git push || { git pull --rebase && git push; }
