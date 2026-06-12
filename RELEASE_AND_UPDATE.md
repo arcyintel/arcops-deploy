@@ -248,6 +248,35 @@ promote. So:
 
 ---
 
+## 7.5 Release notes pipeline
+
+Every version cut also produces an **auto release-notes digest** (conventional
+commits of all 8 product repos over the `(previous tag, this tag]` window):
+
+- `release.yml` → `notes` job runs `scripts/generate-release-notes.sh` +
+  `update-notes-index.sh` and commits `notes/<version>.json` +
+  `releases-index.json` to the **PRIVATE** `arcyintel/arcops-release-notes`
+  repo. Private on purpose: raw commit subjects of the private product repos
+  can describe security fixes and must not be world-readable (this repo is
+  public).
+- `backfill-notes.yml` (workflow_dispatch, `versions=all`) regenerates any/all
+  historical versions with the same script — re-running bumps `generatedAt`,
+  which makes the licence server re-fetch that version.
+- The licence server's `ReleaseNotesSyncJob` polls the index every 15 min
+  (read-only PAT via `ARCOPS_RELEASE_NOTES_TOKEN`) and upserts ONLY the auto
+  fields into `system_release` — the portal-edited user-friendly notes and the
+  publish flag always survive re-syncs. Portal: Filo & Sürümler → "Sürümler"
+  tab (ADMIN edits + "Yayınla"); public page: `/release-notes` (published
+  user-friendly notes only — never the raw commit digest).
+
+**Secrets**: `RELEASE_NOTES_PAT` (this repo; fine-grained: contents:read on
+the 8 product repos + arcops-deploy, contents:read/write on
+arcops-release-notes) and `ARCOPS_RELEASE_NOTES_TOKEN` in the licence box
+`.env` (fine-grained, contents:read on arcops-release-notes only). Do not
+reuse GHCR_PAT.
+
+---
+
 ## 8. Notes / deferred
 
 - **Version embedding (`/actuator/info`)** — deferred. The authoritative "what
