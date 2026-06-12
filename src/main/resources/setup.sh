@@ -4,8 +4,8 @@
 #
 # Bootstraps a clean Ubuntu/Debian host with the current ArcOps stack
 # (identity, gateway, back-core, apple-mdm, android-mdm, windows-mdm
-# + their Postgres + Caddy + RabbitMQ + Redis + Consul + Mosquitto +
-# MailHog). Does NOT install the licence project — that lives
+# + their Postgres + Caddy + RabbitMQ + Redis + Consul + Mosquitto).
+# Does NOT install the licence project — that lives
 # separately on its own machine and is gated behind compose profile
 # `licence`.
 #
@@ -535,11 +535,11 @@ cd "$ARCOPS_DIR"
 info "Pulling images (without licence profile)"
 docker compose pull 2>&1 | tail -5 || true
 
-info "Starting infrastructure (postgres, rabbitmq, redis, consul, mosquitto, mailhog)"
+info "Starting infrastructure (postgres, rabbitmq, redis, consul, mosquitto)"
 docker compose up -d \
     postgres-back-core postgres-apple-mdm postgres-identity \
     postgres-android-mdm postgres-windows-mdm \
-    rabbitmq consul redis mosquitto mailhog
+    rabbitmq consul redis mosquitto
 
 info "Waiting for infrastructure to settle (~15s)"
 sleep 15
@@ -598,7 +598,6 @@ echo -e "${GREEN}${BOLD}ArcOps is up.${NC}"
 echo ""
 echo -e "  ${BOLD}Dashboard:${NC}  https://$DOMAIN"
 echo -e "  ${BOLD}Admin:${NC}      https://$DOMAIN/admin"
-echo -e "  ${BOLD}MailHog:${NC}    https://$DOMAIN/mail/"
 echo -e "  ${BOLD}Win MDM:${NC}    https://mdm.$DOMAIN  /  https://enterpriseenrollment.$DOMAIN"
 echo ""
 echo -e "  ${BOLD}Config:${NC}     $ARCOPS_DIR/.env"

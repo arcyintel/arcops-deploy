@@ -6,7 +6,7 @@
 # the absence of the /licence/* handlers.
 #
 # Three TLS hosts:
-#   1. $DOMAIN                       — Frontend + API + MQTT + MailHog
+#   1. $DOMAIN                       — Frontend + API + MQTT
 #   2. enterpriseenrollment.$DOMAIN  — Windows MS-MDE2 / WSTEP enrolment
 #   3. mdm.$DOMAIN                   — Windows OMA-DM SyncML post-enrol
 #
@@ -110,14 +110,6 @@
         reverse_proxy mosquitto:9001 {
             flush_interval -1
         }
-    }
-
-    # MailHog Web UI
-    handle /mail {
-        redir /mail/ permanent
-    }
-    handle_path /mail/* {
-        reverse_proxy mailhog:8025
     }
 
     # Frontend SPA

@@ -67,10 +67,6 @@ x-redis-env: &redis-env
 x-jwt-env: &jwt-env
   SPRING_SECURITY_OAUTH2_RESOURCESERVER_JWT_JWK_SET_URI: ${JWK_SET_URI:-http://identity:8080/oauth2/jwks}
 
-x-mail-env: &mail-env
-  SPRING_MAIL_HOST: mailhog
-  SPRING_MAIL_PORT: 1025
-
 x-postgres-common: &postgres-common
   image: postgres:17
   networks:
@@ -244,13 +240,6 @@ services:
       timeout: 5s
       retries: 3
 
-  mailhog:
-    image: mailhog/mailhog:latest
-    container_name: mailhog
-    networks:
-      - arcops-internal
-    restart: unless-stopped
-
   # ────────────────────────────────────────────────────────────
   # Application Services
   # ────────────────────────────────────────────────────────────
@@ -337,9 +326,17 @@ services:
       SPRING_FLYWAY_SCHEMAS: back_core
       SPRING_FLYWAY_CREATE_SCHEMAS: "true"
       SPRING_FLYWAY_LOCATIONS: classpath:db/migration
-      # back_core reads ${MAIL_HOST} / ${MAIL_PORT} (not SPRING_MAIL_*)
-      MAIL_HOST: mailhog
-      MAIL_PORT: 1025
+      # Centralized mail: every install sends from the built-in Arcyintel
+      # account (ARCOPS_MAIL_* — credentials land via .env / image defaults);
+      # ENTERPRISE licences may override on the admin Email page (CUSTOM_SMTP).
+      ARCOPS_MAIL_HOST: ${ARCOPS_MAIL_HOST:-}
+      ARCOPS_MAIL_PORT: ${ARCOPS_MAIL_PORT:-587}
+      ARCOPS_MAIL_USERNAME: ${ARCOPS_MAIL_USERNAME:-}
+      ARCOPS_MAIL_PASSWORD: ${ARCOPS_MAIL_PASSWORD:-}
+      ARCOPS_MAIL_FROM: ${ARCOPS_MAIL_FROM:-dev@arcyintel.com}
+      ARCOPS_MAIL_ORG: ${ARCOPS_MAIL_ORG:-ArcOps}
+      ARCOPS_MAIL_TLS: ${ARCOPS_MAIL_TLS:-true}
+      ARCOPS_MAIL_AUTH: ${ARCOPS_MAIL_AUTH:-true}
       # back_core reads ${REDIS_HOST} / ${REDIS_PORT} (not SPRING_DATA_REDIS_*)
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -369,7 +366,7 @@ services:
   identity:
     image: ghcr.io/${GHCR_ORG:-arcyintel}/identity:${IDENTITY_TAG:-stable}
     environment:
-      <<: [*common-env, *db-env, *mail-env]
+      <<: [*common-env, *db-env]
       # First-boot Super Admin seed. Supplied per-install by setup.sh so every
       # deployment gets a UNIQUE random admin password (not the baked-in default),
       # and the operator is forced to change it on first login. Empty = fall back
@@ -450,7 +447,7 @@ services:
       # direct buffers, native libs, Postgres processes).
       # Whitelist filter in DockerStatsService limits visibility to
       # arcops-*, postgres-* (excl. licence), and a fixed infra set
-      # (consul/rabbitmq/redis/mosquitto/caddy/mailhog).
+      # (consul/rabbitmq/redis/mosquitto/caddy).
       - /var/run/docker.sock:/var/run/docker.sock:ro
     depends_on:
       postgres-identity:
@@ -476,7 +473,7 @@ services:
     deploy:
       replicas: ${APPLE_MDM_REPLICAS:-2}
     environment:
-      <<: [*common-env, *db-env, *rabbitmq-env, *redis-env, *jwt-env, *mail-env]
+      <<: [*common-env, *db-env, *rabbitmq-env, *redis-env, *jwt-env]
       # Active-active 2 replicas — heap ~100 MB per replica observed.
       # 256m cap (Faz 4 reduction from 384m) leaves 150 MB headroom.
       JAVA_OPTS: ${APPLE_MDM_JAVA_OPTS:--Xms128m -Xmx256m -Xss512k -XX:MaxMetaspaceSize=192m -XX:MaxDirectMemorySize=96m -XX:ReservedCodeCacheSize=128m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
@@ -549,7 +546,7 @@ services:
     deploy:
       replicas: ${ANDROID_MDM_REPLICAS:-2}
     environment:
-      <<: [*common-env, *db-env, *rabbitmq-env, *redis-env, *jwt-env, *mail-env]
+      <<: [*common-env, *db-env, *rabbitmq-env, *redis-env, *jwt-env]
       # Active-active 2 replicas — heap ~120-150 MB per replica.
       # 288m cap (slightly larger than apple-mdm because android-mdm
       # currently runs the heaviest workload of the MDM trio).
@@ -612,7 +609,7 @@ services:
     deploy:
       replicas: ${WINDOWS_MDM_REPLICAS:-2}
     environment:
-      <<: [*common-env, *db-env, *rabbitmq-env, *redis-env, *jwt-env, *mail-env]
+      <<: [*common-env, *db-env, *rabbitmq-env, *redis-env, *jwt-env]
       # Active-active 2 replicas (matches apple/android). 256m cap
       # — WSTEP/OMA-DM workload similar in shape to apple-mdm.
       JAVA_OPTS: ${WINDOWS_MDM_JAVA_OPTS:--Xms128m -Xmx256m -Xss512k -XX:MaxMetaspaceSize=192m -XX:MaxDirectMemorySize=96m -XX:ReservedCodeCacheSize=128m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
@@ -723,9 +720,12 @@ services:
       <<: [*db-env, *redis-env]
       JAVA_OPTS: -Xms256m -Xmx512m
       SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-licence:5432/arcops_license
-      # licence-server reads ${SMTP_HOST} / ${SMTP_PORT} (not SPRING_MAIL_*)
-      SMTP_HOST: mailhog
-      SMTP_PORT: 1025
+      # licence-server reads ${SMTP_HOST} / ${SMTP_PORT} (not SPRING_MAIL_*).
+      # Follows the same shared mail account as back-core.
+      SMTP_HOST: ${ARCOPS_MAIL_HOST:-}
+      SMTP_PORT: ${ARCOPS_MAIL_PORT:-587}
+      SMTP_USERNAME: ${ARCOPS_MAIL_USERNAME:-}
+      SMTP_PASSWORD: ${ARCOPS_MAIL_PASSWORD:-}
       LICENSE_PRIVATE_KEY_PATH: /app/keys/arcops-license-private.pem
     volumes:
       - ./keys:/app/keys:ro
