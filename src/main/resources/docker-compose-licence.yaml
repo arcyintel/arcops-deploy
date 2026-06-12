@@ -102,6 +102,11 @@ services:
       ARCOPS_PORTAL_ADMIN_EMAIL: ${LICENCE_PORTAL_ADMIN_EMAIL:?LICENCE_PORTAL_ADMIN_EMAIL is required}
       ARCOPS_PORTAL_ADMIN_PASSWORD: ${LICENCE_PORTAL_ADMIN_PASSWORD:?LICENCE_PORTAL_ADMIN_PASSWORD is required}
       ARCOPS_PORTAL_DOMAIN: ${LICENCE_PORTAL_DOMAIN:-arcyintel.com}
+      # AES-256-GCM key for TOTP secrets at rest (LW5 hardening). ≥32 chars;
+      # SecretSanityCheck (prod profile) hard-fails boot when missing/short.
+      # Losing it does NOT lock users out permanently — admins can reset-totp,
+      # and pre-encryption plaintext secrets keep verifying (lazy migration).
+      ARCOPS_TOTP_ENC_KEY: ${LICENCE_TOTP_ENC_KEY:?LICENCE_TOTP_ENC_KEY is required}
       # licence-server reads ${SMTP_HOST} / ${SMTP_PORT} (not the
       # standard SPRING_MAIL_*). Override these in .env to point at
       # real SMTP (Sendgrid / SES / Postmark / …) for production

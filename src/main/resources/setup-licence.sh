@@ -321,6 +321,7 @@ else
     portal_password=$(gen_password)
     portal_secret=$(gen_hex)
     portal_jwt_secret=$(openssl rand -base64 48 | tr -d '\n')   # 384-bit, well above HS256 min
+    totp_enc_key=$(gen_hex)                                     # AES-256-GCM key for TOTP secrets at rest
     admin_password=$(gen_admin_password)
     # The portal only accepts users whose email is on the allowed portal domain
     # (PortalUserService rejects anything else at creation), so the seed admin's
@@ -359,6 +360,10 @@ LICENCE_REDIS_PASSWORD=$redis_password
 #   LICENCE_PORTAL_ADMIN_*     — first portal admin seeded on boot
 LICENCE_PORTAL_JWT_SECRET=$portal_jwt_secret
 LICENCE_PORTAL_SECRET=$portal_secret
+# AES-256-GCM key for TOTP secrets at rest (>=32 chars). Losing it does not
+# permanently lock anyone out: admins can reset-totp, and pre-encryption
+# plaintext secrets keep verifying (lazy migration re-encrypts on next login).
+LICENCE_TOTP_ENC_KEY=$totp_enc_key
 LICENCE_PORTAL_PASSWORD=$portal_password
 LICENCE_PORTAL_ADMIN_EMAIL=$admin_email
 LICENCE_PORTAL_ADMIN_PASSWORD=$admin_password
