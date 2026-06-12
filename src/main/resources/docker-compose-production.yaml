@@ -49,6 +49,11 @@ volumes:
 x-common-env: &common-env
   SPRING_CLOUD_CONSUL_HOST: consul
   SPRING_CLOUD_CONSUL_PORT: 8500
+  # MailHog is gone; the vestigial spring.mail blocks in back-core/android-mdm
+  # would otherwise turn the actuator mail health-indicator DOWN (localhost:1025
+  # refused) and flip the containers unhealthy. Sending does NOT use that bean —
+  # all mail goes through back-core's DynamicMailSenderFactory.
+  MANAGEMENT_HEALTH_MAIL_ENABLED: "false"
 
 x-db-env: &db-env
   SPRING_DATASOURCE_USERNAME: ${DB_USERNAME:-postgres}
