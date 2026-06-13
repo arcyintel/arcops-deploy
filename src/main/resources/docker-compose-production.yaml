@@ -44,6 +44,12 @@ volumes:
   # Mirrors apple_mdm_apps / android_mdm_apps; both replicas of
   # windows-mdm bind this same Docker named volume at /app/releases.
   windows_mdm_releases:
+  # back-core managed-file library binaries (FILE_DISTRIBUTION). Mounted at
+  # /var/arcops/files (arcops.files.storage-root prod default). Without this
+  # the uploaded binaries live on the container's ephemeral layer and vanish on
+  # every watchtower image swap / recreate; the agent-binary pull would 404.
+  # The image creates the dir owned by appuser so the fresh volume inherits it.
+  back_core_files:
 
 # ── Shared Environment Anchors ──────────────────────────────
 x-common-env: &common-env
@@ -349,6 +355,8 @@ services:
       SERVICES_ANDROID_MDM_URL: http://android-mdm:8088/api/android
     volumes:
       - ./config:/app/config
+      # Persist the managed-file library across redeploys (FILE_DISTRIBUTION).
+      - back_core_files:/var/arcops/files
     depends_on:
       postgres-back-core:
         condition: service_healthy
