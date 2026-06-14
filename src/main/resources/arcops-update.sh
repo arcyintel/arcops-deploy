@@ -271,6 +271,26 @@ backup() {
   cp -a "$ARCOPS_DIR/docker-compose.yaml" "$BACKUP_DIR/docker-compose.yaml" 2>/dev/null || true
   if [ -f "$ARCOPS_DIR/Caddyfile" ]; then cp -a "$ARCOPS_DIR/Caddyfile" "$BACKUP_DIR/Caddyfile"; fi
   if [ -d "$ARCOPS_DIR/mosquitto" ]; then cp -a "$ARCOPS_DIR/mosquitto" "$BACKUP_DIR/mosquitto"; fi
+  # Managed-file library volume (FILE_DISTRIBUTION). The uploaded binaries live
+  # in a named volume, NOT the DB — pg_dump only captures the managed_file
+  # metadata rows, so without this the actual files are lost on a rollback.
+  # Discover the real volume name from back-core's /var/arcops/files mount so we
+  # stay agnostic to the compose project prefix; tar it via a throwaway busybox.
+  local bcc filevol
+  bcc=$(docker ps --format '{{.Names}}' | grep -E 'back.?core' | grep -v postgres | head -1)
+  if [ -n "$bcc" ]; then
+    filevol=$(docker inspect "$bcc" \
+      --format '{{range .Mounts}}{{if eq .Destination "/var/arcops/files"}}{{.Name}}{{end}}{{end}}' 2>/dev/null)
+    if [ -n "$filevol" ]; then
+      if docker run --rm -v "$filevol":/v:ro -v "$BACKUP_DIR":/b busybox \
+           tar czf /b/back_core_files.tar.gz -C /v . 2>/dev/null; then
+        log "backup: managed-file volume $filevol → back_core_files.tar.gz"
+      else
+        warn "managed-file volume backup failed (continuing — DB + config still backed up)"
+        rm -f "$BACKUP_DIR/back_core_files.tar.gz"
+      fi
+    fi
+  fi
   # Per-container DB dump. The user/db are discovered from EACH postgres
   # container's own env (POSTGRES_USER/POSTGRES_DB) rather than a single global
   # .env key, so one routine serves every stack:
