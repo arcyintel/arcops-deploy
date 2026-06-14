@@ -357,6 +357,10 @@ else
     server_secret=$(gen_password)
     mdm_ca_master_key=$(gen_base64_32)
     mdm_gateway_secret=$(gen_hex)
+    # Per-install HMAC secret for the signed managed-file download token
+    # (FILE_DISTRIBUTION). back_core mints + verifies; never leaves back_core.
+    # Random per install so no two deployments share a forgeable signing key.
+    files_download_token_secret=$(gen_base64_32)
     # Unique per-install Super Admin bootstrap password — replaces the baked-in
     # init.json default so no two deployments share admin credentials. The
     # operator is forced to change it on first login.
@@ -417,6 +421,13 @@ MDM_CA_MASTER_KEY=$mdm_ca_master_key
 # the X-Client-Cert-Thumbprint header. Caddy reads this from
 # the same .env, so the two stay in sync.
 MDM_GATEWAY_SECRET=$mdm_gateway_secret
+
+# ── File distribution (FILE_DISTRIBUTION) ────────────────────
+# HMAC secret back_core uses to sign the short-lived, device-bound
+# managed-file download token verified on the NON_JWT /agent-binary
+# path. back_core both mints and verifies — the secret never leaves it.
+# Empty ⇒ token signing disabled (legacy unguessable-UUID capability).
+ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET=$files_download_token_secret
 
 # ── Docker socket access for admin Resources page ────────────
 # Identity reads /var/run/docker.sock through its docker group

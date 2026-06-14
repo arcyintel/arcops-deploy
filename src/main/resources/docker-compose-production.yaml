@@ -353,6 +353,12 @@ services:
       REDIS_PORT: 6379
       SERVICES_APPLE_MDM_URL: http://apple-mdm:8085/api/apple
       SERVICES_ANDROID_MDM_URL: http://android-mdm:8088/api/android
+      # FILE_DISTRIBUTION: HMAC secret for the signed, device-bound managed-file
+      # download token (back_core mints + verifies on the NON_JWT /agent-binary).
+      # setup.sh generates a per-install value into .env; EMPTY here = legacy
+      # unguessable-UUID capability (graceful — existing installs whose .env
+      # predates this keep working until they regenerate it).
+      ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET: ${ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET:-}
     volumes:
       - ./config:/app/config
       # Persist the managed-file library across redeploys (FILE_DISTRIBUTION).
