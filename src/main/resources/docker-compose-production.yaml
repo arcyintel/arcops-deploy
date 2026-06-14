@@ -525,6 +525,11 @@ services:
       MQTT_PASSWORD: ${MQTT_PASSWORD:-}
       COMMAND_QUEUE_TYPE: redis
       SERVICES_BACK_CORE_URL: http://back-core:8086/api/back-core
+      # FILE_DISTRIBUTION: the public gateway URL devices HTTPS-pull managed-file
+      # binaries from (NON_JWT /agent-binary). Derived from DOMAIN so it ships via
+      # the normal update mechanism — no per-customer manual env. Same for all MDM
+      # services (apple/android/windows share the back_core file library).
+      ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL: ${ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL:-https://${DOMAIN:-test.uconos.com}/api/back-core/files}
     volumes:
       - apple_mdm_certs:/app/certs/apple
       - apple_mdm_apps:/app/apps
@@ -586,6 +591,11 @@ services:
       APP_HOST: https://${DOMAIN:-test.uconos.com}/api/android
       FIREBASE_CREDENTIALS_PATH: file:certs/firebase/service-account.json
       SERVICES_BACK_CORE_URL: http://back-core:8086/api/back-core
+      # FILE_DISTRIBUTION: the public gateway URL devices HTTPS-pull managed-file
+      # binaries from (NON_JWT /agent-binary). Derived from DOMAIN so it ships via
+      # the normal update mechanism — no per-customer manual env. Same for all MDM
+      # services (apple/android/windows share the back_core file library).
+      ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL: ${ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL:-https://${DOMAIN:-test.uconos.com}/api/back-core/files}
     volumes:
       - android_mdm_apps:/app/apps
       - android_mdm_firebase:/app/certs/firebase
@@ -638,6 +648,11 @@ services:
       SPRING_FLYWAY_CREATE_SCHEMAS: "true"
       APP_HOST: https://${DOMAIN:-test.uconos.com}/api/windows
       SERVICES_BACK_CORE_URL: http://back-core:8086/api/back-core
+      # FILE_DISTRIBUTION: the public gateway URL devices HTTPS-pull managed-file
+      # binaries from (NON_JWT /agent-binary). Derived from DOMAIN so it ships via
+      # the normal update mechanism — no per-customer manual env. Same for all MDM
+      # services (apple/android/windows share the back_core file library).
+      ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL: ${ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL:-https://${DOMAIN:-test.uconos.com}/api/back-core/files}
       # Windows MDM enrolment (MS-MDE2 / MS-WSTEP / OMA-DM) wiring.
       # MDM_CA_MASTER_KEY: 32 random bytes base64 — encrypts the root
       #   CA private key at rest. Generate once with
