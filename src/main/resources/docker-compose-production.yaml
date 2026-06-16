@@ -193,7 +193,14 @@ services:
   redis:
     image: redis:7.0-alpine
     container_name: redis
-    command: ["redis-server", "--appendonly", "yes"]
+    # This Redis holds the apple/android AGENT SESSION TOKENS (30-day TTL,
+    # key prefix agent:session:) as well as OTP + scheduler-lock keys.
+    # --appendonly yes => sessions survive a restart/deploy (AOF replay).
+    # --maxmemory-policy noeviction => session keys are NEVER silently evicted
+    # under memory pressure (writes fail loudly instead). It MUST stay
+    # noeviction — an *-lru / volatile-* policy would drop live sessions (they
+    # carry a TTL) and bounce every agent to the login screen before 30 days.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     volumes:
       - redis_data:/data
     networks:
