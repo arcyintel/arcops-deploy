@@ -278,6 +278,11 @@ services:
       # INSTALLED_VERSION current). The gateway reports it on each licence
       # check so the licence-server Fleet view knows who is on what.
       INSTALLED_VERSION: ${INSTALLED_VERSION:-unknown}
+      # Update posture surfaced to the admin Overview "Version & Update" card
+      # (GET /api/license/system-info). Same .env values arcops-updater follows;
+      # the @Value defaults (stable/true) keep the card working if unset.
+      ARCOPS_CHANNEL: ${ARCOPS_CHANNEL:-stable}
+      ARCOPS_AUTO_UPDATE: ${ARCOPS_AUTO_UPDATE:-true}
       # Tuned JVM defaults (Faz 1 + 4, May 2026). Reactive WebFlux/Netty —
       # DirectMemory is the dominant non-heap consumer here, sized
       # generously. Heap cap tightened from 384m → 256m: observed
