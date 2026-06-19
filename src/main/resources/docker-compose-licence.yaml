@@ -25,6 +25,11 @@ volumes:
   licence_redis_data:
   licence_caddy_data:
   licence_caddy_config:
+  # Vendor app-store binaries (apk/ipa/msi/pkg). The licence-server writes
+  # uploads here under ARCOPS_APPSTORE_DIR; a named volume keeps them across
+  # container recreation (image updates). Size the host disk accordingly —
+  # binaries are 50–400 MB each.
+  licence_appstore_data:
 
 services:
 
@@ -126,8 +131,13 @@ services:
       # repo — ReleaseNotesSyncJob pulls per-version auto release notes with it.
       # Empty = notes sync still runs but fetches will 404 (repo is private).
       ARCOPS_RELEASE_NOTES_TOKEN: ${ARCOPS_RELEASE_NOTES_TOKEN:-}
+      # On-disk home for vendor app-store binary uploads (backed by the
+      # licence_appstore_data named volume below). Must match the mount path.
+      ARCOPS_APPSTORE_DIR: /app/appstore
     volumes:
       - ./keys:/app/keys:ro
+      # Persist app-store binaries across container recreation.
+      - licence_appstore_data:/app/appstore
     depends_on:
       postgres-licence:
         condition: service_healthy
