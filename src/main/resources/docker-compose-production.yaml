@@ -548,6 +548,16 @@ services:
       # the normal update mechanism — no per-customer manual env. Same for all MDM
       # services (apple/android/windows share the back_core file library).
       ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL: ${ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL:-https://${DOMAIN:-test.uconos.com}/api/back-core/files}
+      # Vendor app store: the licence-server base URL the MDM's LicenseStoreClient
+      # calls (/api/v1/appstore) with the customer X-Api-Token. Same value the
+      # gateway phone-home uses. Blank ⇒ the /store endpoints return
+      # STORE_NOT_CONFIGURED. MUST be set for the app store to work.
+      ARCOPS_LICENSE_SERVER_URL: ${ARCOPS_LICENSE_SERVER_URL:-}
+      # App store hard-download gate: HMAC secret used to sign the short-lived,
+      # device-bound enterprise-app download token (only enforced for apps marked
+      # non-downloadable). Reuses the FILE_DISTRIBUTION secret. EMPTY/short ⇒
+      # token signing disabled (legacy anonymous fetch — safe). 32+ chars to enable.
+      ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET: ${ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET:-}
     volumes:
       - apple_mdm_certs:/app/certs/apple
       - apple_mdm_apps:/app/apps
@@ -614,6 +624,16 @@ services:
       # the normal update mechanism — no per-customer manual env. Same for all MDM
       # services (apple/android/windows share the back_core file library).
       ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL: ${ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL:-https://${DOMAIN:-test.uconos.com}/api/back-core/files}
+      # Vendor app store: the licence-server base URL the MDM's LicenseStoreClient
+      # calls (/api/v1/appstore) with the customer X-Api-Token. Same value the
+      # gateway phone-home uses. Blank ⇒ the /store endpoints return
+      # STORE_NOT_CONFIGURED. MUST be set for the app store to work.
+      ARCOPS_LICENSE_SERVER_URL: ${ARCOPS_LICENSE_SERVER_URL:-}
+      # App store hard-download gate: HMAC secret used to sign the short-lived,
+      # device-bound enterprise-app download token (only enforced for apps marked
+      # non-downloadable). Reuses the FILE_DISTRIBUTION secret. EMPTY/short ⇒
+      # token signing disabled (legacy anonymous fetch — safe). 32+ chars to enable.
+      ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET: ${ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET:-}
     volumes:
       - android_mdm_apps:/app/apps
       - android_mdm_firebase:/app/certs/firebase
@@ -671,6 +691,12 @@ services:
       # the normal update mechanism — no per-customer manual env. Same for all MDM
       # services (apple/android/windows share the back_core file library).
       ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL: ${ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL:-https://${DOMAIN:-test.uconos.com}/api/back-core/files}
+      # Vendor app store: licence-server base URL the LicenseStoreClient calls
+      # (/api/v1/appstore). Blank ⇒ /store endpoints return STORE_NOT_CONFIGURED.
+      ARCOPS_LICENSE_SERVER_URL: ${ARCOPS_LICENSE_SERVER_URL:-}
+      # App store hard-download gate HMAC secret (non-downloadable apps only).
+      # Reuses the FILE_DISTRIBUTION secret; EMPTY ⇒ token signing disabled (safe).
+      ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET: ${ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET:-}
       # Windows MDM enrolment (MS-MDE2 / MS-WSTEP / OMA-DM) wiring.
       # MDM_CA_MASTER_KEY: 32 random bytes base64 — encrypts the root
       #   CA private key at rest. Generate once with
