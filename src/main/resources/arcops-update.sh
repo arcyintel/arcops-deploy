@@ -104,6 +104,41 @@ semver_gt() {
 
 env_get() { grep -E "^$1=" "$ARCOPS_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true; }
 
+# Replace-or-append KEY=VALUE in .env. Top-level so both merge_env and the
+# bind-mounted-config staging below can use it.
+set_env_kv() {  # key value
+  if grep -qE "^$1=" "$ARCOPS_DIR/.env"; then
+    sed -i "s|^$1=.*|$1=$2|" "$ARCOPS_DIR/.env"
+  else
+    printf '%s=%s\n' "$1" "$2" >> "$ARCOPS_DIR/.env"
+  fi
+}
+
+# Services to force-recreate because a BIND-MOUNTED config file changed. A
+# changed mounted file does NOT alter the container spec, so `docker compose
+# up -d` leaves the container running with the OLD config it read at startup
+# (mosquitto/caddy have no hot-reload). Populated by stage_files, consumed by
+# apply().
+RECREATE_SVCS=""
+
+# True when a bind-mounted config differs from the checksum the owning service
+# was last (re)created with (recorded in .env). The DESIRED config is the freshly
+# fetched $WORK copy when present, else the on-disk file. Keying off a RECORDED
+# marker — not an on-disk diff — is what converges a file a PRIOR cycle staged
+# but never reloaded (the bug this fixes: config on disk, stale config in the
+# running process, no future diff to re-trigger).
+bind_config_stale() {  # workbasename destpath envkey
+  local src
+  if [ -f "$WORK/$1" ]; then src="$WORK/$1"; elif [ -f "$2" ]; then src="$2"; else return 1; fi
+  [ "sha256:$(sha256sum "$src" | cut -d' ' -f1)" != "$(env_get "$3")" ]
+}
+
+# OR of every tracked bind-mounted config — a manifest/track gate helper.
+bind_config_changed() {
+  bind_config_stale mosquitto.conf "$ARCOPS_DIR/mosquitto/mosquitto.conf" MOSQUITTO_CONF_SHA \
+    || bind_config_stale Caddyfile "$ARCOPS_DIR/Caddyfile" CADDYFILE_SHA
+}
+
 # ── 1. Preflight ─────────────────────────────────────────────
 preflight() {
   if [ ! -f "$ARCOPS_DIR/docker-compose.yaml" ]; then die 10 "no compose at $ARCOPS_DIR — not an ArcOps host?"; fi
@@ -248,11 +283,15 @@ track_has_change() {
   if [ -f "$WORK/docker-compose.yaml" ] && ! cmp -s "$WORK/docker-compose.yaml" "$ARCOPS_DIR/docker-compose.yaml"; then
     log "track: docker-compose.yaml changed"; changed=true
   fi
-  if [ -f "$WORK/mosquitto.conf" ] && ! cmp -s "$WORK/mosquitto.conf" "$ARCOPS_DIR/mosquitto/mosquitto.conf"; then
-    log "track: mosquitto.conf changed"; changed=true
+  # Bind-mounted configs: compare against the checksum the service was last
+  # (re)created with, NOT a plain on-disk diff — so a config a prior cycle staged
+  # but never reloaded (the up-d-doesn't-recreate-on-mount-change bug) is still
+  # detected and converged.
+  if bind_config_stale mosquitto.conf "$ARCOPS_DIR/mosquitto/mosquitto.conf" MOSQUITTO_CONF_SHA; then
+    log "track: mosquitto.conf differs from the loaded config — recreate pending"; changed=true
   fi
-  if [ -f "$WORK/Caddyfile" ] && ! cmp -s "$WORK/Caddyfile" "$ARCOPS_DIR/Caddyfile"; then
-    log "track: Caddyfile changed"; changed=true
+  if bind_config_stale Caddyfile "$ARCOPS_DIR/Caddyfile" CADDYFILE_SHA; then
+    log "track: Caddyfile differs from the loaded config — recreate pending"; changed=true
   fi
   local before after
   before=$(track_image_digests)
@@ -346,13 +385,6 @@ merge_env() {
     done < "$WORK/.env.template"
     if [ "$added" -gt 0 ]; then log "merged $added new env key(s) (existing values preserved)"; fi
   fi
-  set_env_kv() {  # key value  — replace-or-append in .env
-    if grep -qE "^$1=" "$ARCOPS_DIR/.env"; then
-      sed -i "s|^$1=.*|$1=$2|" "$ARCOPS_DIR/.env"
-    else
-      printf '%s=%s\n' "$1" "$2" >> "$ARCOPS_DIR/.env"
-    fi
-  }
   if [ "$MODE" = track ]; then
     # track mode: pin every stack tag var to the moving TRACK_TAG.
     local var
@@ -376,11 +408,27 @@ merge_env() {
 }
 
 # ── 5. Stage new host files + apply ──────────────────────────
+# Stage a bind-mounted host config + arrange a reload. Copies the fetched file
+# (when present) into place, then — if the result differs from the checksum the
+# service was last (re)created with — marks the service for force-recreate in
+# apply() and records the new checksum. Works even when nothing was fetched this
+# cycle but a prior cycle staged a file the running process never reloaded.
+stage_bind_config() {  # workbasename destpath envkey service
+  if [ -f "$WORK/$1" ]; then cp -f "$WORK/$1" "$2"; fi
+  [ -f "$2" ] || return 0
+  local cur; cur="sha256:$(sha256sum "$2" | cut -d' ' -f1)"
+  if [ "$cur" != "$(env_get "$3")" ]; then
+    log "$1 changed → force-recreate $4 to reload the bind-mounted config"
+    RECREATE_SVCS="$RECREATE_SVCS $4"
+    set_env_kv "$3" "$cur"
+  fi
+}
+
 stage_files() {
   if [ "$DRY_RUN" = true ]; then log "[dry-run] would stage compose/Caddyfile/mosquitto.conf"; return 0; fi
   if [ -f "$WORK/docker-compose.yaml" ]; then cp -f "$WORK/docker-compose.yaml" "$ARCOPS_DIR/docker-compose.yaml"; fi
-  if [ -f "$WORK/Caddyfile" ];           then cp -f "$WORK/Caddyfile" "$ARCOPS_DIR/Caddyfile"; fi
-  if [ -f "$WORK/mosquitto.conf" ];      then cp -f "$WORK/mosquitto.conf" "$ARCOPS_DIR/mosquitto/mosquitto.conf"; fi
+  stage_bind_config Caddyfile      "$ARCOPS_DIR/Caddyfile"                  CADDYFILE_SHA      caddy
+  stage_bind_config mosquitto.conf "$ARCOPS_DIR/mosquitto/mosquitto.conf"  MOSQUITTO_CONF_SHA mosquitto
 }
 
 compose_targets() {  # all services except SELF_SERVICE
@@ -398,6 +446,20 @@ apply() {
   local targets; targets=$(compose_targets)
   # shellcheck disable=SC2086
   $COMPOSE up -d --remove-orphans $targets || die 30 "compose up failed"
+
+  # Bind-mounted config changes (mosquitto.conf / Caddyfile) don't alter the
+  # container spec, so the up -d above won't reload them. Force-recreate the
+  # owning services flagged by stage_files (never the updater itself; --no-deps
+  # so we don't cascade-restart their dependents).
+  local svc seen=""
+  for svc in $RECREATE_SVCS; do
+    case " $seen " in *" $svc "*) continue ;; esac
+    seen="$seen $svc"
+    if [ "$svc" = "$SELF_SERVICE" ]; then continue; fi
+    if ! $COMPOSE config --services 2>/dev/null | grep -qx "$svc"; then continue; fi
+    log "reloading bind-mounted config → force-recreate $svc"
+    $COMPOSE up -d --no-deps --force-recreate "$svc" || warn "force-recreate $svc failed"
+  done
 }
 
 # ── 6. Health gate ───────────────────────────────────────────
@@ -447,7 +509,9 @@ if [ "$MODE" = track ] && [ -z "$BUNDLE" ]; then
   fi
   log "track: change detected — applying :$TRACK_TAG"
 else
-  if ! should_update; then exit 5; fi
+  # Apply when the version advances OR a bind-mounted config drifted from the
+  # loaded checksum (so a config-only change converges without a version bump).
+  if ! should_update && ! bind_config_changed; then exit 5; fi
   log "updating $INSTALLED_VERSION → $TARGET_VERSION"
 fi
 backup
