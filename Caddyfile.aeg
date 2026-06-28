@@ -1,0 +1,30 @@
+# ArcOps Android Enterprise Gateway (AEG) — standalone Caddy reverse proxy.
+#
+# Single TLS host: ${AEG_DOMAIN}. AEG exposes exactly one public surface — the
+# AMAPI broker API under /api/v1/aeg/*:
+#   /api/v1/aeg/enterprises/callback   ← Google managed-Play sign-up redirect
+#   /api/v1/aeg/connector/*            ← emm-mdm connector API (api-token authed)
+# Everything else (including /actuator) is blocked from the outside.
+#
+# SSL certs are MANUAL — setup-aeg.sh expects them at
+# /etc/letsencrypt/live/${AEG_DOMAIN}/{fullchain,privkey}.pem.
+# The Caddy container mounts /etc/letsencrypt:/etc/letsencrypt:ro.
+
+{$AEG_DOMAIN} {
+    tls /etc/letsencrypt/live/{$AEG_DOMAIN}/fullchain.pem /etc/letsencrypt/live/{$AEG_DOMAIN}/privkey.pem
+
+    # Actuator — internal ops only; never exposed.
+    handle /actuator/* {
+        respond "Not Found" 404
+    }
+
+    # AMAPI broker API: Google sign-up callback + emm-mdm connector calls.
+    handle /api/v1/aeg/* {
+        reverse_proxy android-enterprise-gateway:8090
+    }
+
+    # Nothing else is served from this host.
+    handle {
+        respond "Not Found" 404
+    }
+}

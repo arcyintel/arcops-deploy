@@ -38,7 +38,7 @@ env:
   # licence (license-server repo) + licence-ui (licence-portal repo) are the
   # licence-stack images (test→:latest, prod→:stable, same version line) —
   # re-tagged but NOT added to the customer manifest.
-  IMAGES: gateway back_core identity apple_mdm android_mdm windows_mdm uconfrontend arcops-updater licence licence-ui
+  IMAGES: gateway back_core identity apple_mdm android_mdm windows_mdm emm_mdm uconfrontend arcops-updater android-enterprise-gateway licence licence-ui
 
 jobs:
   pin:

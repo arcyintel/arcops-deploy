@@ -27,6 +27,7 @@ volumes:
   pg_identity_data:
   pg_android_mdm_data:
   pg_windows_mdm_data:
+  pg_emm_mdm_data:
   pg_licence_data:
   rabbitmq_data:
   consul_data:
@@ -39,6 +40,9 @@ volumes:
   apple_mdm_apps:
   android_mdm_apps:
   android_mdm_firebase:
+  # emm-mdm (Android Enterprise) enterprise-app store binaries — mirrors
+  # android_mdm_apps; both replicas bind this shared volume at /app/apps.
+  emm_mdm_apps:
   # windows-mdm agent-release MSI catalog. Replica A may serve a GET
   # against an MSI that replica B uploaded — needs a shared mount.
   # Mirrors apple_mdm_apps / android_mdm_apps; both replicas of
@@ -140,6 +144,14 @@ services:
       <<: *postgres-env
     volumes:
       - pg_windows_mdm_data:/var/lib/postgresql/data
+
+  postgres-emm-mdm:
+    <<: *postgres-common
+    container_name: postgres-emm-mdm
+    environment:
+      <<: *postgres-env
+    volumes:
+      - pg_emm_mdm_data:/var/lib/postgresql/data
 
   # The licence DB is only needed on machines that also host the
   # licence-server (the standalone licence project). Compose profile
@@ -437,7 +449,7 @@ services:
       ADMIN_INFRA_PG_APPLE_MDM_PORT: 5432
       ADMIN_INFRA_PG_BACK_CORE_HOST: postgres-back-core
       ADMIN_INFRA_PG_BACK_CORE_PORT: 5432
-      ADMIN_INFRA_PG_EMM_MDM_HOST: postgres-back-core
+      ADMIN_INFRA_PG_EMM_MDM_HOST: postgres-emm-mdm
       ADMIN_INFRA_PG_EMM_MDM_PORT: 5432
       ADMIN_INFRA_PG_ANDROID_MDM_HOST: postgres-android-mdm
       ADMIN_INFRA_PG_ANDROID_MDM_PORT: 5432
@@ -654,6 +666,76 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8088/api/android/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  emm-mdm:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/emm_mdm:${EMM_MDM_TAG:-stable}
+    # Android Enterprise (AMAPI) platform service — mirrors android-mdm. Own
+    # Postgres schema (emm_mdm), Consul-registered as emm-mdm so the gateway
+    # /api/emm route resolves. Active-active default 2 replicas; ShedLock (6
+    # schedulers) serialises @Scheduled jobs across replicas. Boots WITHOUT the
+    # central AEG broker / GCP reachable (AegClient is lazy, connector self-
+    # registration is best-effort) so deploying it resolves the gateway 503 on
+    # /api/emm even before the AEG machine exists — it serves dashboard / reports
+    # / enrollment-tokens from its own DB. Runs the default Spring profile like
+    # the other MDM services (no prod fail-fast), so blank AEG creds don't block
+    # boot.
+    deploy:
+      replicas: ${EMM_MDM_REPLICAS:-2}
+    environment:
+      <<: [*common-env, *db-env, *rabbitmq-env, *redis-env, *jwt-env]
+      JAVA_OPTS: ${EMM_MDM_JAVA_OPTS:--Xms128m -Xmx288m -Xss512k -XX:MaxMetaspaceSize=192m -XX:MaxDirectMemorySize=96m -XX:ReservedCodeCacheSize=128m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
+      SPRING_AUTOCONFIGURE_EXCLUDE: org.springframework.boot.actuate.autoconfigure.jmx.JmxEndpointAutoConfiguration,org.springframework.boot.autoconfigure.h2.H2ConsoleAutoConfiguration
+      SPRING_MAIN_BANNER_MODE: "off"
+      SERVER_TOMCAT_THREADS_MAX: 75
+      SERVER_TOMCAT_THREADS_MIN_SPARE: 10
+      SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 5
+      SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 1
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-emm-mdm:5432/${DB_NAME:-molsec_uconos}?currentSchema=emm_mdm
+      SPRING_DATASOURCE_HIKARI_SCHEMA: emm_mdm
+      SPRING_FLYWAY_SCHEMAS: emm_mdm
+      SPRING_FLYWAY_CREATE_SCHEMAS: "true"
+      MQTT_BROKER_URL: tcp://mosquitto:1883
+      MQTT_CLIENT_ID_PREFIX: arcops-emm-mdm-server
+      MQTT_AGENT_BROKER_URL: wss://${DOMAIN:-test.uconos.com}/mqtt
+      MQTT_USERNAME: ${MQTT_USERNAME:-}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-}
+      APP_HOST: https://${DOMAIN:-test.uconos.com}/api/emm
+      SERVICES_BACK_CORE_URL: http://back-core:8086/api/back-core
+      ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL: ${ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL:-https://${DOMAIN:-test.uconos.com}/api/back-core/files}
+      ARCOPS_LICENSE_SERVER_URL: ${ARCOPS_LICENSE_SERVER_URL:-}
+      ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET: ${ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET:-}
+      # Central AEG broker (separate machine, like the licence server). When the
+      # AEG box does not yet exist this resolves to the in-cluster name and the
+      # connector calls fail fast (caught, best-effort) — emm still boots. Point
+      # AEG_BASE_URL at the AEG domain in .env once it's up. AEG_API_TOKEN /
+      # AEG_WEBHOOK_SECRET are the connector creds emm presents to that AEG
+      # (setup.sh generates them; register the SAME values on the AEG box).
+      AEG_BASE_URL: ${AEG_BASE_URL:-http://android-enterprise-gateway:8090}
+      AEG_API_TOKEN: ${AEG_API_TOKEN:-}
+      AEG_WEBHOOK_SECRET: ${AEG_WEBHOOK_SECRET:-}
+    volumes:
+      - emm_mdm_apps:/app/apps
+      - ./config:/app/config
+    depends_on:
+      postgres-emm-mdm:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      consul:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mosquitto:
+        condition: service_healthy
+    networks:
+      - arcops-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8087/api/emm/actuator/health"]
       interval: 30s
       timeout: 10s
       retries: 3

@@ -40,7 +40,7 @@ KEEP_BACKUPS=${ARCOPS_KEEP_BACKUPS:-5}
 SELF_SERVICE=${ARCOPS_SELF_SERVICE:-arcops-updater}   # excluded from recreate so it never kills itself mid-apply
 # Health-gated services (space-separated; override per stack via env — e.g. the
 # licence stack sets just "licence-server").
-read -ra HEALTH_SERVICES <<< "${ARCOPS_HEALTH_SERVICES:-gateway back-core identity apple-mdm android-mdm windows-mdm}"
+read -ra HEALTH_SERVICES <<< "${ARCOPS_HEALTH_SERVICES:-gateway back-core identity apple-mdm android-mdm windows-mdm emm-mdm}"
 
 # ── Update mode ──────────────────────────────────────────────
 # manifest : versioned, semver-gated, reads the release manifest (customer stable).
@@ -68,7 +68,7 @@ TRACK_COMPOSE_URL=${ARCOPS_COMPOSE_URL:-$TRACK_BASE/src/main/resources/docker-co
 TRACK_MOSQUITTO_URL=${ARCOPS_MOSQUITTO_URL-$TRACK_BASE/src/main/resources/mosquitto/mosquitto.conf}
 TRACK_ENV_TEMPLATE_URL=${ARCOPS_ENV_TEMPLATE_URL-$TRACK_BASE/src/main/resources/.env.template}
 TRACK_CADDYFILE_URL=${ARCOPS_CADDYFILE_URL:-${ARCOPS_EDGE_CADDYFILE_URL:-}}
-TAG_VARS=${ARCOPS_TAG_VARS:-GATEWAY_TAG BACK_CORE_TAG IDENTITY_TAG APPLE_MDM_TAG ANDROID_MDM_TAG WINDOWS_MDM_TAG FRONTEND_TAG}
+TAG_VARS=${ARCOPS_TAG_VARS:-GATEWAY_TAG BACK_CORE_TAG IDENTITY_TAG APPLE_MDM_TAG ANDROID_MDM_TAG WINDOWS_MDM_TAG EMM_MDM_TAG FRONTEND_TAG}
 
 log()  { printf '[arcops-update] %s\n' "$*"; }
 warn() { printf '[arcops-update][WARN] %s\n' "$*" >&2; }
@@ -402,6 +402,7 @@ merge_env() {
     set_tag APPLE_MDM_TAG apple-mdm
     set_tag ANDROID_MDM_TAG android-mdm
     set_tag WINDOWS_MDM_TAG windows-mdm
+    set_tag EMM_MDM_TAG emm-mdm
     set_tag FRONTEND_TAG frontend
   fi
   set_env_kv INSTALLED_VERSION "$TARGET_VERSION"

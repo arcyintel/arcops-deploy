@@ -34,7 +34,7 @@ env:
   ORG: arcyintel
   # incl. licence (license-server) + licence-ui (licence-portal) — re-tagged to
   # :stable but deliberately NOT added to the customer manifest's services block.
-  IMAGES: gateway back_core identity apple_mdm android_mdm windows_mdm uconfrontend arcops-updater licence licence-ui
+  IMAGES: gateway back_core identity apple_mdm android_mdm windows_mdm emm_mdm uconfrontend arcops-updater android-enterprise-gateway licence licence-ui
 
 jobs:
   promote:
@@ -115,7 +115,7 @@ jobs:
           # services: manifest keys (hyphenated; frontend, not uconfrontend) → version
           SERVICES="$(jq -n --arg v "$V" '{
             gateway: $v, "back-core": $v, identity: $v, "apple-mdm": $v,
-            "android-mdm": $v, "windows-mdm": $v, frontend: $v, "arcops-updater": $v
+            "android-mdm": $v, "windows-mdm": $v, "emm-mdm": $v, frontend: $v, "arcops-updater": $v
           }')"
 
           mkdir -p src/main/resources/release

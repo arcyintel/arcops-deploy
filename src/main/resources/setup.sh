@@ -40,6 +40,7 @@ ARCOPS_USER=${ARCOPS_USER:-uconos}
 APPLE_REPLICAS=1
 ANDROID_REPLICAS=1
 WINDOWS_REPLICAS=1
+EMM_REPLICAS=1
 MIN_RAM_GB=4
 MIN_DISK_GB=20
 
@@ -91,6 +92,7 @@ Options:
   --apple-replicas N       active-active count for apple-mdm (default 1).
   --android-replicas N     active-active count for android-mdm (default 1).
   --windows-replicas N     active-active count for windows-mdm (default 1).
+  --emm-replicas N         active-active count for emm-mdm / Android Enterprise (default 1).
   --arcops-dir PATH        Install directory (default /opt/arcops).
   -y, --yes                Non-interactive (no confirmation prompts).
   -h, --help               Show this help and exit.
@@ -120,6 +122,7 @@ while [ $# -gt 0 ]; do
         --apple-replicas)    APPLE_REPLICAS="$2"; shift 2 ;;
         --android-replicas)  ANDROID_REPLICAS="$2"; shift 2 ;;
         --windows-replicas)  WINDOWS_REPLICAS="$2"; shift 2 ;;
+        --emm-replicas)      EMM_REPLICAS="$2"; shift 2 ;;
         --arcops-dir)        ARCOPS_DIR="$2"; shift 2 ;;
         -y|--yes)            NON_INTERACTIVE=true; shift ;;
         -h|--help)           usage; exit 0 ;;
@@ -361,6 +364,13 @@ else
     # (FILE_DISTRIBUTION). back_core mints + verifies; never leaves back_core.
     # Random per install so no two deployments share a forgeable signing key.
     files_download_token_secret=$(gen_base64_32)
+    # Android Enterprise connector creds: the token emm-mdm presents to the
+    # central AEG broker + the HMAC secret AEG signs its webhooks with. Generated
+    # here so a fresh install is ready the moment the operator stands up the AEG
+    # box and registers the SAME values there. Until then emm-mdm runs the default
+    # profile (no fail-fast) so these being unused does not block boot.
+    aeg_api_token=$(gen_hex)
+    aeg_webhook_secret=$(gen_hex)
     # Unique per-install Super Admin bootstrap password — replaces the baked-in
     # init.json default so no two deployments share admin credentials. The
     # operator is forced to change it on first login.
@@ -429,6 +439,17 @@ MDM_GATEWAY_SECRET=$mdm_gateway_secret
 # Empty ⇒ token signing disabled (legacy unguessable-UUID capability).
 ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET=$files_download_token_secret
 
+# ── Android Enterprise (emm-mdm → central AEG broker) ────────
+# emm-mdm runs here like the other MDM services. The AMAPI broker (AEG) is a
+# SEPARATE single-instance stack on its own machine (setup-aeg.sh). Leave
+# AEG_BASE_URL blank until that box exists — emm-mdm boots regardless and serves
+# dashboard/reports/enrollment from its own DB; then set it to the AEG https
+# domain. AEG_API_TOKEN/AEG_WEBHOOK_SECRET are the connector creds emm presents
+# to AEG — register the SAME values on the AEG box.
+AEG_BASE_URL=
+AEG_API_TOKEN=$aeg_api_token
+AEG_WEBHOOK_SECRET=$aeg_webhook_secret
+
 # ── Docker socket access for admin Resources page ────────────
 # Identity reads /var/run/docker.sock through its docker group
 # membership. group_add in compose injects this gid as a
@@ -439,6 +460,7 @@ DOCKER_GID=$docker_gid
 APPLE_MDM_REPLICAS=$APPLE_REPLICAS
 ANDROID_MDM_REPLICAS=$ANDROID_REPLICAS
 WINDOWS_MDM_REPLICAS=$WINDOWS_REPLICAS
+EMM_MDM_REPLICAS=$EMM_REPLICAS
 
 # ── Image tags ───────────────────────────────────────────────
 # Pinned to the installed ArcOps release. arcops-updater rewrites these (and
@@ -449,6 +471,7 @@ IDENTITY_TAG=$IMAGE_TAG
 APPLE_MDM_TAG=$IMAGE_TAG
 ANDROID_MDM_TAG=$IMAGE_TAG
 WINDOWS_MDM_TAG=$IMAGE_TAG
+EMM_MDM_TAG=$IMAGE_TAG
 FRONTEND_TAG=$IMAGE_TAG
 
 # ── Release / auto-update (arcops-updater) ───────────────────
