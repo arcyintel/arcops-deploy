@@ -37,6 +37,11 @@ SKIP_GHCR=false
 NON_INTERACTIVE=false
 MIN_RAM_GB=2
 MIN_DISK_GB=10
+# Co-located AEG (--with-aeg): also run the Android Enterprise Gateway in THIS
+# stack behind the same Caddy (license domain → licence, aeg domain → AEG).
+WITH_AEG=false
+AEG_DOMAIN=""
+GCP_KEY_PATH=""
 
 # ── Colors ───────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -77,6 +82,16 @@ Options:
   --skip-ghcr              Skip GHCR login prompt.
   --smtp-host HOST         External SMTP host (default: mailhog).
   --smtp-port PORT         External SMTP port (default: 1025).
+  --with-aeg               Also run the Android Enterprise Gateway (AEG) in
+                           THIS stack, behind the same Caddy (co-located:
+                           license domain → licence, aeg domain → AEG). Uses
+                           docker-compose-licence-aeg.yaml + Caddyfile.licence-aeg.
+                           Requires --aeg-domain + --gcp-key. (Set on a FRESH
+                           install — an existing .env is preserved, not appended.)
+  --aeg-domain HOST        Public domain for AEG (e.g. aeg.acme.com). Point its
+                           DNS at THIS machine; get a cert for it too.
+  --gcp-key PATH           GCP service-account JSON (AMAPI + Pub/Sub). Copied to
+                           $LICENCE_DIR/gcp/service-account.json. Required with --with-aeg.
   --licence-dir PATH       Install directory (default /opt/arcops-licence).
   -y, --yes                Non-interactive.
   -h, --help               Show this help.
@@ -113,6 +128,9 @@ while [ $# -gt 0 ]; do
         --skip-ghcr)         SKIP_GHCR=true; shift ;;
         --smtp-host)         SMTP_HOST="$2"; shift 2 ;;
         --smtp-port)         SMTP_PORT="$2"; shift 2 ;;
+        --with-aeg)          WITH_AEG=true; shift ;;
+        --aeg-domain)        AEG_DOMAIN="$2"; shift 2 ;;
+        --gcp-key)           GCP_KEY_PATH="$2"; shift 2 ;;
         --licence-dir)       LICENCE_DIR="$2"; shift 2 ;;
         -y|--yes)            NON_INTERACTIVE=true; shift ;;
         -h|--help)           usage; exit 0 ;;
@@ -127,8 +145,8 @@ done
 # (which also creates :stable for licence + licence-portal) BEFORE installing a
 # prod box, else `docker compose up` can't pull :stable.
 case "$INSTALL_CHANNEL" in
-    stable) LIC_TAG=stable; UI_TAG=stable; UPDATER_TAG=stable; UPDATE_POLL=3600 ;;
-    edge)   LIC_TAG=latest; UI_TAG=latest; UPDATER_TAG=latest; UPDATE_POLL=120 ;;
+    stable) LIC_TAG=stable; UI_TAG=stable; AEG_TAG=stable; UPDATER_TAG=stable; UPDATE_POLL=3600 ;;
+    edge)   LIC_TAG=latest; UI_TAG=latest; AEG_TAG=latest; UPDATER_TAG=latest; UPDATE_POLL=120 ;;
     *)      error "Unknown --channel: $INSTALL_CHANNEL (use 'stable' or 'edge')"; exit 1 ;;
 esac
 
@@ -269,6 +287,40 @@ else
     fi
 fi
 
+# ── (--with-aeg) AEG domain + GCP service-account key ───────
+# Co-located: the AEG runs in this stack. Mirrors setup-aeg.sh's key handling
+# (jq-validate service-account JSON, copy to ./gcp, extract project_id).
+gcp_project=""
+if [ "$WITH_AEG" = true ]; then
+    [ -n "$AEG_DOMAIN" ] || { error "--with-aeg requires --aeg-domain (e.g. aeg.acme.com)"; exit 1; }
+    log "AEG domain: $AEG_DOMAIN (co-located behind the same Caddy)"
+    mkdir -p "$LICENCE_DIR/gcp"
+    gcp_dest="$LICENCE_DIR/gcp/service-account.json"
+    if [ -r "$gcp_dest" ]; then
+        chmod 644 "$gcp_dest"
+        gcp_project=$(jq -r '.project_id // empty' "$gcp_dest" 2>/dev/null || true)
+        [ -n "$gcp_project" ] || { error "Existing $gcp_dest is not a valid service-account JSON (no project_id)"; exit 1; }
+        log "Existing GCP key at $gcp_dest — kept (project: $gcp_project)"
+    elif [ -z "$GCP_KEY_PATH" ]; then
+        error "No GCP key at $gcp_dest and --gcp-key not provided (required with --with-aeg)"
+        exit 1
+    elif [ ! -r "$GCP_KEY_PATH" ]; then
+        error "Cannot read GCP key: $GCP_KEY_PATH"
+        exit 1
+    else
+        if ! jq -e '.type == "service_account" and .project_id and .private_key and .client_email' \
+                "$GCP_KEY_PATH" >/dev/null 2>&1; then
+            error "Not a valid GCP service-account JSON (need type=service_account + project_id + private_key + client_email): $GCP_KEY_PATH"
+            exit 1
+        fi
+        gcp_project=$(jq -r '.project_id' "$GCP_KEY_PATH")
+        cp "$GCP_KEY_PATH" "$gcp_dest"
+        chmod 644 "$gcp_dest"
+        log "GCP service-account key installed (project: $gcp_project)"
+        warn "Store a BACKUP of the service-account key OUTSIDE this server."
+    fi
+fi
+
 # ═══════════════════════════════════════════════════════════════
 step "4/8 — SSL certificates"
 # ═══════════════════════════════════════════════════════════════
@@ -289,6 +341,24 @@ else
         error "Re-run with --skip-tls-check to bootstrap before certs land,"
         error "or run certbot first and re-run this script."
         exit 1
+    fi
+fi
+
+# ── (--with-aeg) AEG domain cert ────────────────────────────
+if [ "$WITH_AEG" = true ]; then
+    afp=/etc/letsencrypt/live/$AEG_DOMAIN/fullchain.pem
+    akp=/etc/letsencrypt/live/$AEG_DOMAIN/privkey.pem
+    if [ -r "$afp" ] && [ -r "$akp" ]; then
+        log "Cert + key present at /etc/letsencrypt/live/$AEG_DOMAIN/"
+    else
+        warn "Missing certs for $AEG_DOMAIN"
+        info "  sudo certbot certonly --standalone -d $AEG_DOMAIN"
+        if [ "$SKIP_TLS_CHECK" = true ]; then
+            warn "Continuing anyway (--skip-tls-check). Caddy crash-loops until BOTH domains have certs."
+        else
+            error "Re-run with --skip-tls-check to bootstrap before certs land, or run certbot first."
+            exit 1
+        fi
     fi
 fi
 
@@ -400,6 +470,29 @@ ARCOPS_AUTO_UPDATE=true
 # LICENCE_JAVA_OPTS=-Xms128m -Xmx256m
 ENVFILE
 
+    if [ "$WITH_AEG" = true ]; then
+        aeg_db_password=$(gen_password)
+        aeg_app_key=$(openssl rand -base64 32)   # AES-256 key for per-connector webhook secrets at rest
+        cat >> "$LICENCE_DIR/.env" <<AEGENV
+
+# ── Android Enterprise Gateway (AEG) — CO-LOCATED ────────────
+# AEG runs in this stack behind the same Caddy; ${AEG_DOMAIN} → android-enterprise-gateway:8090.
+# GCP service-account JSON is at $LICENCE_DIR/gcp/service-account.json (mounted read-only).
+AEG_DOMAIN=$AEG_DOMAIN
+AEG_DB_USERNAME=postgres
+AEG_DB_PASSWORD=$aeg_db_password
+AEG_GCP_PROJECT_ID=$gcp_project
+AEG_APP_KEY=$aeg_app_key
+AEG_CALLBACK_URL=https://$AEG_DOMAIN/api/v1/aeg/enterprises/callback
+AEG_COMPANION_ENABLED=false
+# Channel tag for the AEG image; arcops-updater (track mode) rewrites it on update.
+AEG_TAG=$AEG_TAG
+# Optional JVM override for AEG — defaults live in docker-compose-licence-aeg.yaml.
+# AEG_JAVA_OPTS=-Xms128m -Xmx256m
+AEGENV
+        log "AEG secrets appended to .env (co-located, project: $gcp_project)"
+    fi
+
     chmod 600 "$LICENCE_DIR/.env"
     log ".env generated (chmod 600)"
 fi
@@ -408,14 +501,24 @@ fi
 step "7/8 — Configuration files"
 # ═══════════════════════════════════════════════════════════════
 
-info "Fetching Caddyfile"
-curl -fsSL "$COMMONS_REPO/Caddyfile.licence" -o "$LICENCE_DIR/Caddyfile"
-log "Caddyfile"
+if [ "$WITH_AEG" = true ]; then
+    info "Fetching Caddyfile (combined licence + AEG)"
+    curl -fsSL "$COMMONS_REPO/Caddyfile.licence-aeg" -o "$LICENCE_DIR/Caddyfile"
+    log "Caddyfile.licence-aeg"
+    info "Fetching docker-compose.yaml (combined licence + AEG)"
+    curl -fsSL "$COMMONS_REPO/src/main/resources/docker-compose-licence-aeg.yaml" \
+        -o "$LICENCE_DIR/docker-compose.yaml"
+    log "docker-compose-licence-aeg.yaml"
+else
+    info "Fetching Caddyfile"
+    curl -fsSL "$COMMONS_REPO/Caddyfile.licence" -o "$LICENCE_DIR/Caddyfile"
+    log "Caddyfile"
 
-info "Fetching docker-compose.yaml"
-curl -fsSL "$COMMONS_REPO/src/main/resources/docker-compose-licence.yaml" \
-    -o "$LICENCE_DIR/docker-compose.yaml"
-log "docker-compose.yaml"
+    info "Fetching docker-compose.yaml"
+    curl -fsSL "$COMMONS_REPO/src/main/resources/docker-compose-licence.yaml" \
+        -o "$LICENCE_DIR/docker-compose.yaml"
+    log "docker-compose.yaml"
+fi
 
 # ═══════════════════════════════════════════════════════════════
 step "8/8 — GHCR + start"
@@ -439,7 +542,11 @@ info "Pulling images"
 docker compose pull 2>&1 | tail -5 || true
 
 info "Starting infra (postgres + redis + mailhog)"
-docker compose up -d postgres-licence redis mailhog
+if [ "$WITH_AEG" = true ]; then
+    docker compose up -d postgres-licence postgres-aeg redis mailhog
+else
+    docker compose up -d postgres-licence redis mailhog
+fi
 sleep 10
 
 info "Starting licence-server + portal + caddy"
@@ -476,6 +583,9 @@ echo ""
 echo -e "  ${BOLD}Portal:${NC}      https://$LICENCE_DOMAIN"
 echo -e "  ${BOLD}API:${NC}         https://$LICENCE_DOMAIN/api/"
 echo -e "  ${BOLD}MailHog:${NC}     https://$LICENCE_DOMAIN/mail/"
+if [ "$WITH_AEG" = true ]; then
+echo -e "  ${BOLD}AEG:${NC}         https://$AEG_DOMAIN/api/v1/aeg/  (co-located — set emm AEG_BASE_URL=https://$AEG_DOMAIN)"
+fi
 echo ""
 echo -e "  ${BOLD}Portal admin login (first boot, 2FA enrolled on first sign-in):${NC}"
 echo -e "    Email:    $admin_login_email"

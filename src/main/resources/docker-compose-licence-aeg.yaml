@@ -1,0 +1,261 @@
+# ── ArcOps Licence Server + Android Enterprise Gateway (AEG) — CO-LOCATED ──
+#
+# Runs BOTH the licence stack and the AEG (central AMAPI broker) on ONE machine,
+# behind ONE Caddy that host-routes by domain:
+#   ${LICENCE_DOMAIN}  → licence-server / licence-portal
+#   ${AEG_DOMAIN}      → android-enterprise-gateway
+#
+# This is the co-located twin of docker-compose-licence.yaml + docker-compose-aeg.yaml.
+# Those two stay as-is for SEPARATE-machine deploys. This file is used only by
+# setup-licence.sh --with-aeg. Self-contained (single compose, single Caddy,
+# single track-mode updater for all three images) so the updater needs only one
+# ARCOPS_COMPOSE_URL.
+#
+# ⚠️ DRIFT: the licence-* services + the postgres-aeg/android-enterprise-gateway
+# blocks are copied from docker-compose-{licence,aeg}.yaml. When EITHER standalone
+# compose changes a service definition, mirror it here.
+#
+# Required at runtime (provided by setup-licence.sh --with-aeg):
+#   - ./keys/arcops-license-private.pem    RSA-4096 PKCS#8 signing key
+#   - ./gcp/service-account.json           GCP service-account key (AMAPI + Pub/Sub)
+#   - .env with LICENCE_* + AEG_* + both DOMAINs
+#   - /etc/letsencrypt/live/<licence-domain>/{fullchain,privkey}.pem
+#   - /etc/letsencrypt/live/<aeg-domain>/{fullchain,privkey}.pem
+#
+# Usage:
+#   docker compose -f docker-compose-licence-aeg.yaml up -d
+
+networks:
+  licence-internal:
+    driver: bridge
+  licence-public:
+    driver: bridge
+
+volumes:
+  pg_licence_data:
+  pg_aeg_data:
+  licence_redis_data:
+  licence_caddy_data:
+  licence_caddy_config:
+  licence_appstore_data:
+
+services:
+
+  # ── PostgreSQL (licence) ────────────────────────────────────
+  postgres-licence:
+    image: postgres:17
+    container_name: postgres-licence
+    environment:
+      POSTGRES_USER: ${LICENCE_DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${LICENCE_DB_PASSWORD:?LICENCE_DB_PASSWORD is required}
+      POSTGRES_DB: arcops_license
+    volumes:
+      - pg_licence_data:/var/lib/postgresql/data
+    networks:
+      - licence-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LICENCE_DB_USERNAME:-postgres} -d arcops_license"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── PostgreSQL (AEG) — separate DB, same host ───────────────
+  postgres-aeg:
+    image: postgres:17
+    container_name: postgres-aeg
+    environment:
+      POSTGRES_USER: ${AEG_DB_USERNAME:-postgres}
+      POSTGRES_PASSWORD: ${AEG_DB_PASSWORD:?AEG_DB_PASSWORD is required}
+      POSTGRES_DB: arcops_aeg
+    volumes:
+      - pg_aeg_data:/var/lib/postgresql/data
+    networks:
+      - licence-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${AEG_DB_USERNAME:-postgres} -d arcops_aeg"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis (licence cache + rate-limit + refresh tokens) ─────
+  redis:
+    image: redis:7.0-alpine
+    container_name: licence-redis
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${LICENCE_REDIS_PASSWORD:?LICENCE_REDIS_PASSWORD is required}"]
+    volumes:
+      - licence_redis_data:/data
+    networks:
+      - licence-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${LICENCE_REDIS_PASSWORD}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── MailHog (dev SMTP catcher — replace with real SMTP env in prod) ─
+  mailhog:
+    image: mailhog/mailhog:latest
+    container_name: licence-mailhog
+    networks:
+      - licence-internal
+    restart: unless-stopped
+
+  # ── Licence Server (Spring Boot API) ───────────────────────
+  licence-server:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/licence:${LICENCE_TAG:-latest}
+    container_name: licence-server
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_OPTS: ${LICENCE_JAVA_OPTS:--Xms128m -Xmx256m -Xss512k -XX:MaxMetaspaceSize=160m -XX:MaxDirectMemorySize=64m -XX:ReservedCodeCacheSize=96m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-licence:5432/arcops_license
+      SPRING_DATASOURCE_USERNAME: ${LICENCE_DB_USERNAME:-postgres}
+      SPRING_DATASOURCE_PASSWORD: ${LICENCE_DB_PASSWORD:?LICENCE_DB_PASSWORD is required}
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_DATA_REDIS_PORT: 6379
+      SPRING_DATA_REDIS_PASSWORD: ${LICENCE_REDIS_PASSWORD:?LICENCE_REDIS_PASSWORD is required}
+      ARCOPS_PORTAL_JWT_SECRET: ${LICENCE_PORTAL_JWT_SECRET:?LICENCE_PORTAL_JWT_SECRET is required}
+      ARCOPS_PORTAL_SECRET: ${LICENCE_PORTAL_SECRET:?LICENCE_PORTAL_SECRET is required}
+      ARCOPS_PORTAL_PASSWORD: ${LICENCE_PORTAL_PASSWORD:?LICENCE_PORTAL_PASSWORD is required}
+      ARCOPS_PORTAL_ADMIN_EMAIL: ${LICENCE_PORTAL_ADMIN_EMAIL:?LICENCE_PORTAL_ADMIN_EMAIL is required}
+      ARCOPS_PORTAL_ADMIN_PASSWORD: ${LICENCE_PORTAL_ADMIN_PASSWORD:?LICENCE_PORTAL_ADMIN_PASSWORD is required}
+      ARCOPS_PORTAL_DOMAIN: ${LICENCE_PORTAL_DOMAIN:-arcyintel.com}
+      ARCOPS_TOTP_ENC_KEY: ${LICENCE_TOTP_ENC_KEY:?LICENCE_TOTP_ENC_KEY is required}
+      SMTP_HOST: ${SMTP_HOST:-mailhog}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      LICENSE_PRIVATE_KEY_PATH: /app/keys/arcops-license-private.pem
+      LICENCE_PUBLIC_URL: https://${LICENCE_DOMAIN:?LICENCE_DOMAIN is required}
+      ARCOPS_RELEASE_PUBLISH_TOKEN: ${ARCOPS_RELEASE_PUBLISH_TOKEN:-}
+      ARCOPS_RELEASE_NOTES_TOKEN: ${ARCOPS_RELEASE_NOTES_TOKEN:-}
+      ARCOPS_APPSTORE_DIR: /app/appstore
+    volumes:
+      - ./keys:/app/keys:ro
+      - licence_appstore_data:/app/appstore
+    depends_on:
+      postgres-licence:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - licence-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── Licence Portal (admin SPA — nginx-served static build) ──
+  licence-portal:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/licence-ui:${LICENCE_UI_TAG:-latest}
+    container_name: licence-portal
+    environment:
+      ARCOPS_API_URL: https://${LICENCE_DOMAIN}
+      ARCOPS_PORTAL_PASSWORD: ${LICENCE_PORTAL_PASSWORD:?LICENCE_PORTAL_PASSWORD is required}
+      ARCOPS_PORTAL_SECRET: ${LICENCE_PORTAL_SECRET:?LICENCE_PORTAL_SECRET is required}
+    depends_on:
+      licence-server:
+        condition: service_healthy
+    networks:
+      - licence-internal
+    restart: unless-stopped
+
+  # ── Android Enterprise Gateway (Spring Boot, AMAPI broker) ──
+  # Co-located: joins licence-internal so the shared Caddy reaches it by name.
+  # Mirror of docker-compose-aeg.yaml's service (networks retargeted).
+  android-enterprise-gateway:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/android-enterprise-gateway:${AEG_TAG:-stable}
+    container_name: android-enterprise-gateway
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      JAVA_OPTS: ${AEG_JAVA_OPTS:--Xms128m -Xmx256m -Xss512k -XX:MaxMetaspaceSize=160m -XX:MaxDirectMemorySize=64m -XX:ReservedCodeCacheSize=96m -XX:+UseG1GC -XX:+UseStringDeduplication -XX:+ExitOnOutOfMemoryError -XX:+HeapDumpOnOutOfMemoryError -XX:HeapDumpPath=/tmp -Djava.awt.headless=true -Dspring.jmx.enabled=false}
+      DB_HOST: postgres-aeg
+      DB_PORT: 5432
+      DB_NAME: arcops_aeg
+      DB_USERNAME: ${AEG_DB_USERNAME:-postgres}
+      DB_PASSWORD: ${AEG_DB_PASSWORD:?AEG_DB_PASSWORD is required}
+      AEG_GCP_PROJECT_ID: ${AEG_GCP_PROJECT_ID:?AEG_GCP_PROJECT_ID is required}
+      AEG_GCP_SA_KEY_PATH: /app/gcp/service-account.json
+      AEG_APP_KEY: ${AEG_APP_KEY:?AEG_APP_KEY is required}
+      AEG_CALLBACK_URL: ${AEG_CALLBACK_URL:-https://${AEG_DOMAIN}/api/v1/aeg/enterprises/callback}
+      AEG_COMPANION_ENABLED: ${AEG_COMPANION_ENABLED:-false}
+    volumes:
+      - ./gcp:/app/gcp:ro
+    depends_on:
+      postgres-aeg:
+        condition: service_healthy
+    networks:
+      - licence-internal
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8090/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  # ── Caddy (TLS reverse proxy — fronts BOTH domains) ─────────
+  caddy:
+    image: caddy:2-alpine
+    container_name: licence-caddy
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      LICENCE_DOMAIN: ${LICENCE_DOMAIN}
+      AEG_DOMAIN: ${AEG_DOMAIN:?AEG_DOMAIN is required}
+    volumes:
+      # setup-licence.sh --with-aeg places Caddyfile.licence-aeg here as ./Caddyfile.
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - licence_caddy_data:/data
+      - licence_caddy_config:/config
+    depends_on:
+      licence-server:
+        condition: service_healthy
+      android-enterprise-gateway:
+        condition: service_healthy
+    networks:
+      - licence-internal
+      - licence-public
+    restart: unless-stopped
+    # No healthcheck: Caddy serves only the two configured vhosts, so a probe to
+    # 127.0.0.1:80 returns 404 and would flap "unhealthy" forever. Liveness is the
+    # TLS endpoints. Nothing depends on caddy's health.
+
+  # ── arcops-updater (release agent — tracks BOTH licence + AEG) ─
+  # Single TRACK-mode updater for the co-located stack: tracks licence + licence-ui
+  # + AEG images at the channel tag, plus this combined compose + Caddyfile, applying
+  # on change with backup → health-gate → rollback.
+  arcops-updater:
+    image: ghcr.io/${GHCR_ORG:-arcyintel}/arcops-updater:${ARCOPS_UPDATER_TAG:-stable}
+    container_name: arcops-updater
+    environment:
+      ARCOPS_DIR: ${ARCOPS_DIR:-/opt/arcops-licence}
+      ARCOPS_UPDATE_MODE: track
+      ARCOPS_CHANNEL: ${ARCOPS_CHANNEL:-stable}
+      ARCOPS_TRACK_TAG: ${ARCOPS_TRACK_TAG:-stable}
+      ARCOPS_AUTO_UPDATE: ${ARCOPS_AUTO_UPDATE:-true}
+      ARCOPS_UPDATE_POLL_INTERVAL: ${ARCOPS_UPDATE_POLL_INTERVAL:-3600}
+      ARCOPS_SELF_SERVICE: arcops-updater
+      ARCOPS_UPDATER_TAG: ${ARCOPS_UPDATER_TAG:-stable}
+      GHCR_ORG: ${GHCR_ORG:-arcyintel}
+      # Co-located stack files + the three images (licence, licence-ui, AEG):
+      ARCOPS_COMPOSE_URL: ${ARCOPS_COMPOSE_URL:-https://raw.githubusercontent.com/arcyintel/arcops-deploy/main/src/main/resources/docker-compose-licence-aeg.yaml}
+      ARCOPS_CADDYFILE_URL: ${ARCOPS_CADDYFILE_URL:-https://raw.githubusercontent.com/arcyintel/arcops-deploy/main/Caddyfile.licence-aeg}
+      ARCOPS_TAG_VARS: "LICENCE_TAG LICENCE_UI_TAG AEG_TAG"
+      ARCOPS_HEALTH_SERVICES: "licence-server android-enterprise-gateway"
+      ARCOPS_MOSQUITTO_URL: ""
+      ARCOPS_ENV_TEMPLATE_URL: ""
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ~/.docker/config.json:/root/.docker/config.json:ro
+      # MUST mount at the SAME path — compose CLI binds HOST paths; ./keys, ./gcp
+      # and ./Caddyfile resolve relative to the compose dir.
+      - ${ARCOPS_DIR:-/opt/arcops-licence}:${ARCOPS_DIR:-/opt/arcops-licence}
+    networks:
+      - licence-internal
+    restart: unless-stopped

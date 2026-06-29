@@ -1,0 +1,69 @@
+# ArcOps Licence Server + Android Enterprise Gateway (AEG) — CO-LOCATED Caddy.
+#
+# ONE Caddy fronting BOTH domains on a single machine, routed by Host header:
+#   ${LICENCE_DOMAIN}  (e.g. license.titanuem.com) → licence-server / licence-portal
+#   ${AEG_DOMAIN}      (e.g. aeg.titanuem.com)      → android-enterprise-gateway
+#
+# This is the co-located twin of Caddyfile.licence + Caddyfile.aeg: the two
+# standalone Caddyfiles stay as-is for separate-machine deploys; this file is
+# used only by docker-compose-licence-aeg.yaml (setup-licence.sh --with-aeg).
+# Keep each host block in sync with its standalone source.
+#
+# SSL certs are MANUAL — setup-licence.sh --with-aeg expects BOTH:
+#   /etc/letsencrypt/live/${LICENCE_DOMAIN}/{fullchain,privkey}.pem
+#   /etc/letsencrypt/live/${AEG_DOMAIN}/{fullchain,privkey}.pem
+# The Caddy container mounts /etc/letsencrypt:/etc/letsencrypt:ro.
+
+# ── Licence host (mirrors Caddyfile.licence) ────────────────────────────────
+{$LICENCE_DOMAIN} {
+    tls /etc/letsencrypt/live/{$LICENCE_DOMAIN}/fullchain.pem /etc/letsencrypt/live/{$LICENCE_DOMAIN}/privkey.pem
+
+    # Licence-server actuator — internal ops only; blocked from outside.
+    handle /actuator/* {
+        respond "Not Found" 404
+    }
+
+    # Portal admin API (staff JWT) — listed before /api/* so it wins (more specific).
+    handle /portal/api/* {
+        reverse_proxy licence-server:9090
+    }
+
+    # Customer-facing + fleet + public signup API (licence check, release manifest,
+    # fleet version intake, /api/v1/signup/*) — straight through.
+    handle /api/* {
+        reverse_proxy licence-server:9090
+    }
+
+    # MailHog catcher (dev/debug surface).
+    handle /mail {
+        redir /mail/ permanent
+    }
+    handle_path /mail/* {
+        reverse_proxy mailhog:8025
+    }
+
+    # Portal SPA — everything else (/, /login, /dashboard, /assets/*, …).
+    handle {
+        reverse_proxy licence-portal:80
+    }
+}
+
+# ── AEG host (mirrors Caddyfile.aeg) ────────────────────────────────────────
+{$AEG_DOMAIN} {
+    tls /etc/letsencrypt/live/{$AEG_DOMAIN}/fullchain.pem /etc/letsencrypt/live/{$AEG_DOMAIN}/privkey.pem
+
+    # Actuator — internal ops only; never exposed.
+    handle /actuator/* {
+        respond "Not Found" 404
+    }
+
+    # AMAPI broker API: Google sign-up callback + emm-mdm connector calls.
+    handle /api/v1/aeg/* {
+        reverse_proxy android-enterprise-gateway:8090
+    }
+
+    # Nothing else is served from this host.
+    handle {
+        respond "Not Found" 404
+    }
+}
