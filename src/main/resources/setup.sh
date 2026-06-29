@@ -364,13 +364,13 @@ else
     # (FILE_DISTRIBUTION). back_core mints + verifies; never leaves back_core.
     # Random per install so no two deployments share a forgeable signing key.
     files_download_token_secret=$(gen_base64_32)
-    # Android Enterprise connector creds: the token emm-mdm presents to the
-    # central AEG broker + the HMAC secret AEG signs its webhooks with. Generated
-    # here so a fresh install is ready the moment the operator stands up the AEG
-    # box and registers the SAME values there. Until then emm-mdm runs the default
-    # profile (no fail-fast) so these being unused does not block boot.
-    aeg_api_token=$(gen_hex)
-    aeg_webhook_secret=$(gen_hex)
+    # Android Enterprise connector creds are NO LONGER generated here. emm-mdm
+    # SELF-BOOTSTRAPS them from its licence (POST /api/v1/aeg/bootstrap → AEG mints
+    # the token + webhook secret, persisted to config/aeg-connector.properties). A
+    # random token written here would actually DEADLOCK the bootstrap: the connector
+    # would see a non-empty AEG_API_TOKEN env, assume it is provisioned, and never
+    # mint — yet AEG would reject it (it never minted that value). So leave both blank.
+    # (Set them in .env only to pre-provision a token out of band — that overrides.)
     # Unique per-install Super Admin bootstrap password — replaces the baked-in
     # init.json default so no two deployments share admin credentials. The
     # operator is forced to change it on first login.
@@ -440,15 +440,15 @@ MDM_GATEWAY_SECRET=$mdm_gateway_secret
 ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET=$files_download_token_secret
 
 # ── Android Enterprise (emm-mdm → central AEG broker) ────────
-# emm-mdm runs here like the other MDM services. The AMAPI broker (AEG) is a
-# SEPARATE single-instance stack on its own machine (setup-aeg.sh). Leave
-# AEG_BASE_URL blank until that box exists — emm-mdm boots regardless and serves
-# dashboard/reports/enrollment from its own DB; then set it to the AEG https
-# domain. AEG_API_TOKEN/AEG_WEBHOOK_SECRET are the connector creds emm presents
-# to AEG — register the SAME values on the AEG box.
+# emm-mdm runs here like the other MDM services. The AMAPI broker (AEG) is the
+# vendor's central instance; the compose defaults AEG_BASE_URL to its domain, so
+# leaving it blank here uses that default (override only for a non-default AEG).
+# AEG_API_TOKEN/AEG_WEBHOOK_SECRET are intentionally BLANK: emm-mdm self-bootstraps
+# them from its licence (a random value here would deadlock the bootstrap — see the
+# secret-gen section). Set them only to pre-provision a token out of band.
 AEG_BASE_URL=
-AEG_API_TOKEN=$aeg_api_token
-AEG_WEBHOOK_SECRET=$aeg_webhook_secret
+AEG_API_TOKEN=
+AEG_WEBHOOK_SECRET=
 
 # ── Docker socket access for admin Resources page ────────────
 # Identity reads /var/run/docker.sock through its docker group

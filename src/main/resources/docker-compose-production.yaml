@@ -708,13 +708,15 @@ services:
       ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL: ${ARCOPS_FILES_AGENT_DOWNLOAD_BASE_URL:-https://${DOMAIN:-test.uconos.com}/api/back-core/files}
       ARCOPS_LICENSE_SERVER_URL: ${ARCOPS_LICENSE_SERVER_URL:-}
       ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET: ${ARCOPS_FILES_DOWNLOAD_TOKEN_SECRET:-}
-      # Central AEG broker (separate machine, like the licence server). When the
-      # AEG box does not yet exist this resolves to the in-cluster name and the
-      # connector calls fail fast (caught, best-effort) — emm still boots. Point
-      # AEG_BASE_URL at the AEG domain in .env once it's up. AEG_API_TOKEN /
-      # AEG_WEBHOOK_SECRET are the connector creds emm presents to that AEG
-      # (setup.sh generates them; register the SAME values on the AEG box).
-      AEG_BASE_URL: ${AEG_BASE_URL:-http://android-enterprise-gateway:8090}
+      # Central AEG broker (vendor-run, like the licence server) — default points at
+      # the central domain so every customer reaches it with NO per-box config. Until
+      # the AEG box exists the connector calls fail fast (caught, best-effort) — emm
+      # still boots. AEG_API_TOKEN / AEG_WEBHOOK_SECRET are left blank on purpose: the
+      # connector SELF-BOOTSTRAPS them from its licence (POST /api/v1/aeg/bootstrap →
+      # persisted to config/aeg-connector.properties). Set the env only to pre-provision
+      # out of band (it then overrides the bootstrap). Override AEG_BASE_URL in .env for
+      # a non-default AEG domain.
+      AEG_BASE_URL: ${AEG_BASE_URL:-https://aeg.titanuem.com}
       AEG_API_TOKEN: ${AEG_API_TOKEN:-}
       AEG_WEBHOOK_SECRET: ${AEG_WEBHOOK_SECRET:-}
     volumes:

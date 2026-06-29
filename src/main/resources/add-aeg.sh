@@ -81,8 +81,10 @@ Options:
   -h, --help           Show this help.
 
 After running, point each ArcOps customer (and test.uconos.com) at AEG:
-  set  AEG_BASE_URL=https://<aeg-domain>  in their .env and restart emm-mdm.
-Then provision an emm-connector credential in the AEG portal/API.
+  set  AEG_BASE_URL=https://<aeg-domain>  in their .env and restart emm-mdm
+(the prod compose already defaults to the central AEG domain). emm then
+self-bootstraps its connector token + webhook secret from its licence —
+no manual per-customer credential registration.
 EOF
 }
 
@@ -386,6 +388,7 @@ echo -e "  ${BOLD}Config:${NC}   $LICENCE_DIR/.env   (AEG_* appended; licence se
 echo -e "  ${BOLD}Backups:${NC}  $bak_compose , $bak_caddy"
 echo ""
 echo -e "${YELLOW}Next (per ArcOps customer + test.uconos.com):${NC}"
-echo -e "  set  ${BOLD}AEG_BASE_URL=https://$AEG_DOMAIN${NC}  in their .env, then restart emm-mdm."
-echo -e "  Then provision an emm-connector credential in the AEG portal/API."
+echo -e "  set  ${BOLD}AEG_BASE_URL=https://$AEG_DOMAIN${NC}  in their .env, then restart emm-mdm"
+echo -e "  (prod compose already defaults to the central AEG domain). emm then self-bootstraps"
+echo -e "  its connector token + webhook secret from its licence — no manual token registration."
 echo ""
