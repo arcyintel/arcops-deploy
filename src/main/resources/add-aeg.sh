@@ -350,6 +350,19 @@ if [ "$aeg_healthy" != true ]; then
     exit 1
 fi
 
+# Caddy fronts the LIVE licence domain too. The combined Caddyfile has an explicit
+# tls directive for BOTH domains, so a missing AEG cert (or any Caddyfile error)
+# makes Caddy fail to load → it crash-loops → licence HTTPS goes down. Verify Caddy
+# is actually Up and roll back rather than print success over a dead Caddy.
+if docker compose ps caddy 2>/dev/null | grep -q "Restarting" || \
+   ! docker compose ps caddy 2>/dev/null | grep -qE "Up|healthy"; then
+    error "Caddy is not Up — the combined Caddyfile failed to load (AEG cert missing?)."
+    error "Check:  docker compose logs caddy"
+    rollback
+    exit 1
+fi
+log "Caddy up — both licence + AEG vhosts served"
+
 # Past the point of failure — disarm the backstop so the success summary prints.
 trap - ERR
 
