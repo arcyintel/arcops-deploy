@@ -603,7 +603,7 @@ log "Volume permissions normalised"
 # ═══════════════════════════════════════════════════════════════
 
 step "Health check"
-services=("gateway:8084" "back-core:8086" "identity:8080" "apple-mdm:8085" "android-mdm:8088" "windows-mdm:8089")
+services=("gateway:8084" "back-core:8086" "identity:8080" "apple-mdm:8085" "android-mdm:8088" "windows-mdm:8089" "emm-mdm:8087")
 max_wait=240
 elapsed=0
 while [ "$elapsed" -lt "$max_wait" ]; do
