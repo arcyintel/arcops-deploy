@@ -214,9 +214,14 @@ services:
       - licence_caddy_data:/data
       - licence_caddy_config:/config
     depends_on:
+      # Hard-depend ONLY on licence-server (same as the standalone licence compose).
+      # Deliberately NOT on android-enterprise-gateway's health: coupling the live
+      # licence domain's TLS to a fresh AEG service would mean a failed AEG boot
+      # (bad GCP creds, DB migration, image bug) blocks Caddy from starting and
+      # takes licence HTTPS down for every customer. Caddy's reverse_proxy retries
+      # the AEG upstream, so the AEG vhost just serves 502 until AEG is up — the
+      # licence vhost is never affected.
       licence-server:
-        condition: service_healthy
-      android-enterprise-gateway:
         condition: service_healthy
     networks:
       - licence-internal
