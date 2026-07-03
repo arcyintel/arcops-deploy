@@ -326,9 +326,9 @@ fi
 step "5/9 — Directory layout"
 # ═══════════════════════════════════════════════════════════════
 
-mkdir -p "$ARCOPS_DIR"/{config,certs,data,mosquitto,keys}
+mkdir -p "$ARCOPS_DIR"/{config,certs,data,mosquitto,mosquitto/secrets,keys}
 cd "$ARCOPS_DIR"
-log "Layout: $ARCOPS_DIR/{config,certs,data,mosquitto,keys}"
+log "Layout: $ARCOPS_DIR/{config,certs,data,mosquitto,mosquitto/secrets,keys}"
 
 # ═══════════════════════════════════════════════════════════════
 step "6/9 — Secrets + .env"
@@ -364,6 +364,13 @@ else
     # (FILE_DISTRIBUTION). back_core mints + verifies; never leaves back_core.
     # Random per install so no two deployments share a forgeable signing key.
     files_download_token_secret=$(gen_base64_32)
+    # Shared MQTT broker principal password for the mosquitto go-auth `files`
+    # backend. Hashed (PBKDF2) into mosquitto/secrets/passwords.txt at startup
+    # (step 9) as the `arcops-backend` principal — the shared identity every
+    # backend service uses AND that /auth hands to the apple/android agents.
+    # The auth-enabled broker rejects anonymous CONNECT, so this must be
+    # generated + hashed or the whole fleet fails to connect.
+    mqtt_password=$(gen_password)
     # Android Enterprise connector creds are NO LONGER generated here. emm-mdm
     # SELF-BOOTSTRAPS them from its licence (POST /api/v1/aeg/bootstrap → AEG mints
     # the token + webhook secret, persisted to config/aeg-connector.properties). A
@@ -410,6 +417,15 @@ DB_PASSWORD=$db_password
 # ── RabbitMQ ─────────────────────────────────────────────────
 RABBITMQ_USER=admin
 RABBITMQ_PASSWORD=$rabbitmq_password
+
+# ── MQTT broker auth (mosquitto go-auth \`files\` backend) ─────
+# Shared principal every backend service uses (their MqttConfig only sends
+# creds when the username is non-blank) AND that /auth hands to the
+# apple/android agents. The matching PBKDF2 hash is provisioned into
+# mosquitto/secrets/passwords.txt on first start. The auth-enabled broker
+# rejects anonymous CONNECT, so BOTH must be present or the fleet drops off.
+MQTT_USERNAME=arcops-backend
+MQTT_PASSWORD=$mqtt_password
 
 # ── Identity (OAuth2 + JWT) ──────────────────────────────────
 SERVER_SECRET=$server_secret
@@ -568,6 +584,38 @@ cd "$ARCOPS_DIR"
 
 info "Pulling images (without licence profile)"
 docker compose pull 2>&1 | tail -5 || true
+
+# ── Provision mosquitto go-auth passwords.txt (files backend) ─
+# The auth-enabled broker (allow_anonymous false) authenticates the shared
+# `arcops-backend` principal via the `files` backend reading this PBKDF2 hash.
+# Generated from MQTT_PASSWORD (.env) with the `pw` tool baked into the broker
+# image. WITHOUT it, once the auth config is active mosquitto fatals on boot
+# ("couldn't open passwords file") and every service + agent drops off. The
+# broker ships anonymous by default and flips to auth via the updater/runbook,
+# so a pw failure here degrades to an anonymous broker (still works) with a
+# warning rather than a hard install failure. Idempotent: kept if present.
+mqtt_secrets_dir="$ARCOPS_DIR/mosquitto/secrets"
+mqtt_pw_file="$mqtt_secrets_dir/passwords.txt"
+if [ -f "$mqtt_pw_file" ]; then
+    log "mosquitto passwords.txt already present — kept"
+else
+    mqtt_pw=$(grep '^MQTT_PASSWORD=' "$ARCOPS_DIR/.env" 2>/dev/null | cut -d= -f2- || true)
+    if [ -n "$mqtt_pw" ]; then
+        mkdir -p "$mqtt_secrets_dir"
+        mqtt_img="ghcr.io/${GHCR_ORG}/mosquitto-with-go-auth:2"
+        mqtt_hash=$(docker run --rm --entrypoint /mosquitto/pw "$mqtt_img" -p "$mqtt_pw" 2>/dev/null | tail -n1 || true)
+        if printf '%s' "$mqtt_hash" | grep -q '^PBKDF2\$'; then
+            printf 'arcops-backend:%s\n' "$mqtt_hash" > "$mqtt_pw_file"
+            chown -R 1000:1000 "$mqtt_secrets_dir" 2>/dev/null || true
+            chmod 600 "$mqtt_pw_file"
+            log "mosquitto passwords.txt provisioned (arcops-backend)"
+        else
+            warn "Could not hash MQTT password via the broker image's pw tool —"
+            warn "broker stays anonymous until you provision $mqtt_pw_file"
+            warn "(see DEPLOYMENT.md) and restart mosquitto."
+        fi
+    fi
+fi
 
 info "Starting infrastructure (postgres, rabbitmq, redis, consul, mosquitto)"
 docker compose up -d \
