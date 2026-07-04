@@ -850,10 +850,10 @@ services:
       - arcops-public
     restart: unless-stopped
     healthcheck:
-      # Override Dockerfile HEALTHCHECK: alpine wget tries [::1]:80 first
-      # and fails with connection-refused because nginx binds IPv4 only.
-      # Explicit 127.0.0.1 keeps it simple and stable.
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:80/"]
+      # nginx now runs non-root and binds :8080 (UconFrontend 1ee3a60e "non-root
+      # nginx") — it no longer listens on :80, so probe :8080. Explicit 127.0.0.1
+      # (alpine wget tries [::1] first) keeps it simple and stable.
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/"]
       interval: 30s
       timeout: 5s
       retries: 3
