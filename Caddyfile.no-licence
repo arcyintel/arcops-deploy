@@ -177,6 +177,19 @@ mdm.{$DOMAIN} {
         }
     }
 
+    # Device-facing DM asset downloads the agent fetches from `publicHost`
+    # (mdm host): MSI/EXE apps (/dm/apps), agent self-update MSIs
+    # (/dm/agent-releases), policy assets (/dm/policy-assets). All live under
+    # the DmEdgeFilter-guarded /dm/** chain, so — like management.svc above —
+    # we must inject X-Gateway-Auth or the filter 401s. Per-request auth is the
+    # signed ?token= the builders mint. Without this handle these paths fell to
+    # the 404 catch-all below and InstallWin32App/UpdateAgent downloads broke.
+    handle /api/windows/dm/* {
+        reverse_proxy gateway:8084 {
+            header_up X-Gateway-Auth "{$MDM_GATEWAY_SECRET}"
+        }
+    }
+
     handle {
         respond "Not Found" 404
     }

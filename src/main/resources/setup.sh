@@ -397,6 +397,12 @@ DOMAIN=$DOMAIN
 # Windows MDM public hostname (used in OMA-DM provisioning XML
 # and the MDM DiscoveryService SOAP response).
 MDM_PUBLIC_HOST=https://mdm.$DOMAIN
+# WSTEP enrollment host handed to the device (Policy.svc + Enrollment.svc) and
+# the MAIN-domain host baked into agent install/distribution links. Both must
+# track this customer's DOMAIN — the in-image defaults point at the vendor test
+# box and would break enrollment + every agent-install link.
+MDM_ENROLLMENT_HOST=https://enterpriseenrollment.$DOMAIN
+WINDOWS_SHARE_LINK_HOST=https://$DOMAIN/api/windows
 
 # GHCR org we pull images from.
 GHCR_ORG=$GHCR_ORG

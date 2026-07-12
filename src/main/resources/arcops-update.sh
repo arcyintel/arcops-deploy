@@ -501,12 +501,69 @@ rollback() {
   warn "rolled back. DB NOT auto-restored; per-schema snapshots are in $BACKUP_DIR/*.sql.gz if a migration must be reverted."
 }
 
+# ── Idempotent Caddy /dm/* route reconcile ───────────────────
+# The box-owned Caddyfile is NOT fetched/synced (ARCOPS_EDGE_CADDYFILE_URL is
+# empty by design — every host owns its file: licence-vs-no-licence variant, the
+# optional BYOD site block, mTLS client_auth). So a device-facing ROUTING fix
+# reaches the whole fleet via a targeted in-place patch, NOT a full-file sync
+# that would clobber those per-host blocks. Ensures the mdm.<DOMAIN> site routes
+# /api/windows/dm/* (device-facing MSI/EXE app + agent-release + policy-asset
+# downloads the agent fetches from publicHost) to the gateway WITH X-Gateway-Auth
+# — exactly like the adjacent ManagementServer/MDM.svc handle. Without it those
+# /dm/** paths hit the mdm block's 404 catch-all (DmEdgeFilter never sees the
+# request), so InstallWin32App / UpdateAgent / policy-MSI downloads break.
+# Idempotent (no-op once present), caddy-validated before it takes effect, and
+# self-reverting + self-recreating.
+reconcile_caddyfile_dm_route() {
+  local cf="$ARCOPS_DIR/Caddyfile"
+  [ -f "$cf" ] || return 0
+  grep -q '/api/windows/dm/\*' "$cf" && return 0             # already patched → no-op
+  grep -q '/api/windows/dm/management.svc' "$cf" || return 0 # no mdm site block here
+  if [ "$DRY_RUN" = true ]; then log "[dry-run] would patch Caddyfile: insert /api/windows/dm/* handle"; return 0; fi
+  local tmp; tmp=$(mktemp)
+  # Insert the handle immediately after the (brace-balanced) ManagementServer/MDM.svc
+  # handle, i.e. before the mdm block's catch-all. Brace counting tolerates the
+  # {$MDM_GATEWAY_SECRET} token (its { and } cancel on the header_up line).
+  awk '
+    /handle \/ManagementServer\/MDM\.svc \{/ { inb=1; d=1; print; next }
+    inb {
+      print
+      d += gsub(/\{/, "{") - gsub(/\}/, "}")
+      if (d == 0) {
+        inb = 0
+        print ""
+        print "    handle /api/windows/dm/* {"
+        print "        reverse_proxy gateway:8084 {"
+        print "            header_up X-Gateway-Auth \"{$MDM_GATEWAY_SECRET}\""
+        print "        }"
+        print "    }"
+      }
+      next
+    }
+    { print }
+  ' "$cf" > "$tmp" || { warn "caddy: /dm/* patch awk failed — skipping"; rm -f "$tmp"; return 0; }
+  if ! grep -q '/api/windows/dm/\*' "$tmp"; then warn "caddy: /dm/* anchor not matched — skipping patch"; rm -f "$tmp"; return 0; fi
+  cp -a "$cf" "$cf.bak-dmpatch-$TS"
+  cp -f "$tmp" "$cf"; rm -f "$tmp"
+  local cc; cc=$($COMPOSE ps -q caddy 2>/dev/null | head -1); [ -n "$cc" ] || cc=caddy
+  if ! docker exec "$cc" caddy validate --adapter caddyfile --config /etc/caddy/Caddyfile >/dev/null 2>&1; then
+    warn "caddy: /dm/* patched Caddyfile failed validation — reverting to backup"
+    cp -f "$cf.bak-dmpatch-$TS" "$cf"; return 0
+  fi
+  log "caddy: inserted /api/windows/dm/* handle (device-facing downloads) — force-recreating caddy"
+  $COMPOSE up -d --no-deps --force-recreate caddy || warn "caddy: force-recreate failed after /dm/* patch"
+}
+
 # Note: a box's running version is reported to the licence-server Fleet view by
 # the GATEWAY (X-Installed-Version header on its hourly, authenticated
 # /license/check) — not from here. So this script has no separate phone-home.
 
 # ── main ─────────────────────────────────────────────────────
 preflight
+# Converge the box-owned Caddyfile's device-facing /dm/* route every cycle,
+# BEFORE the change-gate — a routing-only fix must apply even when no image or
+# compose version moved.
+reconcile_caddyfile_dm_route
 resolve_release
 if [ "$MODE" = track ] && [ -z "$BUNDLE" ]; then
   if ! track_has_change; then

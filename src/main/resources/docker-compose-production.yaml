@@ -790,9 +790,18 @@ services:
       #   service trusts the forwarded X-Client-Cert-Thumbprint header.
       # MDM_PUBLIC_HOST: hostname Windows devices reach (used in
       #   SOAP discovery responses + DMClient provisioning XML).
+      # MDM_ENROLLMENT_HOST: WSTEP/MS-MDE2 host the device is handed for
+      #   Policy.svc + Enrollment.svc in the Discovery response. MUST be the
+      #   customer's own enterpriseenrollment host — without this it falls to
+      #   the in-image test.uconos.com default and enrollment fails everywhere.
+      # WINDOWS_SHARE_LINK_HOST: MAIN {$DOMAIN} host baked into agent
+      #   distribution/install links (the public /api/windows/agent/public
+      #   download lives on the {$DOMAIN} Caddy site, NOT mdm.*).
       MDM_CA_MASTER_KEY: ${MDM_CA_MASTER_KEY:?MDM_CA_MASTER_KEY must be set in .env}
       MDM_GATEWAY_SECRET: ${MDM_GATEWAY_SECRET:?MDM_GATEWAY_SECRET must be set in .env}
       MDM_PUBLIC_HOST: ${MDM_PUBLIC_HOST:-https://mdm.${DOMAIN:-test.uconos.com}}
+      MDM_ENROLLMENT_HOST: ${MDM_ENROLLMENT_HOST:-https://enterpriseenrollment.${DOMAIN:-test.uconos.com}}
+      WINDOWS_SHARE_LINK_HOST: ${WINDOWS_SHARE_LINK_HOST:-https://${DOMAIN:-test.uconos.com}/api/windows}
       # V2 Agent (MQTT) command channel. Apple/Android pattern: the broker's
       # network alias is `mosquitto` (not the application.yaml default `mqtt`),
       # plus a stable client-id prefix the app combines with a random suffix
