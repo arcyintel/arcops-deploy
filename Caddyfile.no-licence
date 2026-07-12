@@ -25,6 +25,17 @@
         file_server
     }
 
+    # Operator-hosted signed PowerShell scripts — public static host.
+    # The ArcOps Windows agent GETs the .ps1 from here and verifies its
+    # SHA-256 before executing, so integrity is the agent's job and no auth
+    # is applied here (do NOT put secrets in scripts — the URL is public).
+    # Files live in the host bind ./scripts (compose: ./scripts:/srv/scripts:ro),
+    # so they survive every container redeploy. URL: /scripts/<name>.ps1
+    handle /scripts/* {
+        root * /srv
+        file_server
+    }
+
     # Apple Account-Driven Enrollment Discovery
     handle /.well-known/com.apple.remotemanagement {
         reverse_proxy gateway:8084

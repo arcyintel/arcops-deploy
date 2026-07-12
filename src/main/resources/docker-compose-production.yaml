@@ -973,6 +973,10 @@ services:
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./privacy-policy.html:/srv/privacy-policy.html:ro
+      # Operator-hosted signed PowerShell scripts, served static at /scripts/*.
+      # Host dir survives every container redeploy; drop *.ps1 here + register
+      # the URL+sha256 in the Signed Scripts catalog. See Caddyfile /scripts/* handle.
+      - ./scripts:/srv/scripts:ro
       - caddy_data:/data
       - caddy_config:/config
       - /etc/letsencrypt:/etc/letsencrypt:ro
