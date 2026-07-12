@@ -554,6 +554,26 @@ reconcile_caddyfile_dm_route() {
   $COMPOSE up -d --no-deps --force-recreate caddy || warn "caddy: force-recreate failed after /dm/* patch"
 }
 
+# ── Self-heal: strip placeholder Windows host env leaked via env roll-forward ──
+# A .env.template revision briefly listed MDM_ENROLLMENT_HOST / WINDOWS_SHARE_LINK_HOST
+# with a CHANGEME placeholder; merge_env copied the literal into every box .env, which
+# OVERRIDES the compose ${VAR:-…${DOMAIN}…} default and breaks Windows enrollment +
+# agent-install links (they point at CHANGEME.example.com). Remove any such placeholder
+# line so the compose default re-derives from the box's real DOMAIN. Idempotent;
+# force-recreates windows-mdm only when it actually cleaned a line.
+reconcile_env_placeholder_hosts() {
+  local env="$ARCOPS_DIR/.env"
+  [ -f "$env" ] || return 0
+  grep -qE '^(MDM_ENROLLMENT_HOST|WINDOWS_SHARE_LINK_HOST)=.*CHANGEME' "$env" || return 0
+  if [ "$DRY_RUN" = true ]; then log "[dry-run] would strip placeholder MDM_ENROLLMENT_HOST/WINDOWS_SHARE_LINK_HOST from .env"; return 0; fi
+  cp -a "$env" "$env.bak-hostfix-$TS"
+  sed -i -E '/^(MDM_ENROLLMENT_HOST|WINDOWS_SHARE_LINK_HOST)=.*CHANGEME/d' "$env"
+  log "env: removed CHANGEME placeholder MDM_ENROLLMENT_HOST/WINDOWS_SHARE_LINK_HOST — compose now derives from DOMAIN; recreating windows-mdm"
+  if $COMPOSE config --services 2>/dev/null | grep -qx windows-mdm; then
+    $COMPOSE up -d --no-deps --force-recreate windows-mdm || warn "env: windows-mdm recreate failed after host-placeholder cleanup"
+  fi
+}
+
 # Note: a box's running version is reported to the licence-server Fleet view by
 # the GATEWAY (X-Installed-Version header on its hourly, authenticated
 # /license/check) — not from here. So this script has no separate phone-home.
@@ -564,6 +584,9 @@ preflight
 # BEFORE the change-gate — a routing-only fix must apply even when no image or
 # compose version moved.
 reconcile_caddyfile_dm_route
+# Self-heal any CHANGEME Windows-host placeholder that a prior env roll-forward
+# copied into this box's .env (else enrollment + agent links break).
+reconcile_env_placeholder_hosts
 resolve_release
 if [ "$MODE" = track ] && [ -z "$BUNDLE" ]; then
   if ! track_has_change; then
