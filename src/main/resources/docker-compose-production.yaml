@@ -813,9 +813,17 @@ services:
       # named volume so a GET against replica B for a file uploaded to
       # replica A succeeds (active-active correctness).
       WINDOWS_AGENT_RELEASE_PATH: /app/releases
+      # UI-authored signed PowerShell scripts. windows-mdm writes <id>.ps1 here;
+      # the SAME host dir is bind-mounted into Caddy read-only (./scripts:/srv/scripts:ro)
+      # and served static at /scripts/* on the main domain, so the agent fetches the
+      # URL below (integrity is the agent's SHA-256 check). Both replicas share the
+      # host dir → active-active correct. The host ./scripts must be chown 999:999.
+      WINDOWS_SIGNED_SCRIPTS_PATH: /app/signed-scripts
+      WINDOWS_SIGNED_SCRIPTS_BASE_URL: https://${DOMAIN:-test.uconos.com}/scripts
     volumes:
       - ./config:/app/config
       - windows_mdm_releases:/app/releases
+      - ./scripts:/app/signed-scripts
     depends_on:
       postgres-windows-mdm:
         condition: service_healthy

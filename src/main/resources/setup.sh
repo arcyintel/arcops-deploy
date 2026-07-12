@@ -326,9 +326,9 @@ fi
 step "5/9 — Directory layout"
 # ═══════════════════════════════════════════════════════════════
 
-mkdir -p "$ARCOPS_DIR"/{config,certs,data,mosquitto,mosquitto/secrets,keys}
+mkdir -p "$ARCOPS_DIR"/{config,certs,data,mosquitto,mosquitto/secrets,keys,scripts}
 cd "$ARCOPS_DIR"
-log "Layout: $ARCOPS_DIR/{config,certs,data,mosquitto,mosquitto/secrets,keys}"
+log "Layout: $ARCOPS_DIR/{config,certs,data,mosquitto,mosquitto/secrets,keys,scripts}"
 
 # ═══════════════════════════════════════════════════════════════
 step "6/9 — Secrets + .env"
@@ -632,9 +632,12 @@ docker compose up -d
 info "Fixing volume permissions on first boot"
 sleep 5
 # Apple/Android/Windows MDM volumes need write access for appuser
-# (uid 999) — Docker named volumes start as root-owned.
+# (uid 999) — Docker named volumes start as root-owned. /app/signed-scripts is
+# the windows-mdm HOST bind (./scripts) for UI-authored .ps1 bodies; chowning the
+# bind target inside the container also chowns the host source (shared inode) so
+# appuser can persist scripts. Harmlessly no-ops on apple/android (dir absent).
 for svc in $(docker compose ps --format '{{.Name}}' | grep -E 'apple-mdm|android-mdm|windows-mdm'); do
-    docker exec -u 0 "$svc" sh -c 'chown -R 999:999 /app/apps /app/certs /app/releases 2>/dev/null || true' 2>/dev/null || true
+    docker exec -u 0 "$svc" sh -c 'chown -R 999:999 /app/apps /app/certs /app/releases /app/signed-scripts 2>/dev/null || true' 2>/dev/null || true
 done
 # config/ is a HOST bind-mount (./config) shared by the gateway + every MDM
 # service: the gateway (appuser uid 999) writes config/license.dat there on

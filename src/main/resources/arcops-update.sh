@@ -448,6 +448,15 @@ apply() {
   # shellcheck disable=SC2086
   $COMPOSE up -d --remove-orphans $targets || die 30 "compose up failed"
 
+  # windows-mdm's ./scripts host bind (/app/signed-scripts) holds UI-authored
+  # .ps1 bodies and must be writable by appuser (uid 999). Docker creates a new
+  # bind source root-owned, and auto-updates never run setup.sh — so without this
+  # the first UI script upload fails (AccessDeniedException → STORAGE_ERROR) on
+  # every existing fleet host. chown via the running container (mirrors setup.sh);
+  # the bind's shared inode propagates the ownership to the host source. Idempotent.
+  local wsvc; wsvc=$($COMPOSE ps --format '{{.Name}}' 2>/dev/null | grep -E 'windows-mdm' | head -1)
+  [ -n "$wsvc" ] && docker exec -u 0 "$wsvc" sh -c 'chown -R 999:999 /app/signed-scripts 2>/dev/null || true' 2>/dev/null || true
+
   # Bind-mounted config changes (mosquitto.conf / Caddyfile) don't alter the
   # container spec, so the up -d above won't reload them. Force-recreate the
   # owning services flagged by stage_files (never the updater itself; --no-deps
